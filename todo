@@ -1,0 +1,22 @@
+XX - Have a preferred phase array in phases.h
+	XX used to index into score array + for applying phase in decide.c
+	XX initialise it properly
+	** for now, just putting in heap struct **
+XX - Put reference to preferred phase array in heap
+XX - update the solver->scores heap to have a 2x sized backing score array
+XX - in all places indexing score array, use preferred phase to get correct score
+XX - when bumping activity, do the switcheroo on preferred phase
+	in bump_analyzed_variable_score in bump.c, do before kissat_update_heap
+- Update decide.c to apply preferred phase from LSIDS scoring
+XX - Update inline.h to preserve analyzed polarity for bumping
+XX - Make sure literal being bumped is in the learned clause/conflicting clause, not the trail
+- Investigate eliminate.c and factor.c interacting
+- Figure out way to include VSIDS
+- Decide what you want to do with involving it in decisions (all the time, only stable, only focused) and ensure it's
+doing that
+
+
+Notes:
+- 	eliminate.c interacts with variable scores in weird ways,
+	might need to be ripped out
+-	factor.c interacts with variable scores

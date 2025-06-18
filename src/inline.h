@@ -240,13 +240,42 @@ static inline clause *kissat_binary_conflict (kissat *solver, unsigned a,
   return res;
 }
 
+// For now, will play it safe by having a separate stack for saving the val
+// of the var for bumping (bumping relies on solver->analyzed) and taking in
+// the lit to save that Memory usage improvement would investigate whether
+// analyzed arr can be just lits or whether other parts of code rely on them
+// being vars (unsure as of time of writing) after further investigation,
+// it's definitely the case that code uses solver->analyzed popping things
+// from it and expecting the values to represent the indexes -
+// analyze_reason_side_literals, etc. - a lot of these use it to map back to
+// the right index in the solver's "assigned" struct array for marking
+// properties on each assigned struct val least invasive is to ask for pol
+// here, then create a new stack to map 1:1 - or an array offset by index?
+// As long as you grow and shrink at same rate though it should be fine...
+// the more nuclear approach would be to make everything popping from
+// analyzed to >> 1 to get var index from the lit
+/*
+I did identify that putting lits in that analyzed stack that the bumping
+uses would be more of a problem, as there's a few places that pop from the
+stack expecting the values to represent variable indexes. I plan to start by
+implementing something simple like an array to keep polarities to match to
+analyzed to be used in bumping lits, and then I can use solver statistics
+from testing that impl to compare to another 2 iterations of optimisation:
+
+Use a stack that grows/shrinks with analyzed (instead of an array, will be
+better for memory)
+Put lits in analyzed and then bitshift down by 1 when
+something pops and expects a variable index
+
+*/
 static inline void kissat_push_analyzed (kissat *solver, assigned *assigned,
-                                         unsigned idx) {
+                                         unsigned idx, unsigned pol) {
   assert (idx < VARS);
   struct assigned *a = assigned + idx;
   assert (!a->analyzed);
   a->analyzed = true;
   PUSH_STACK (solver->analyzed, idx);
+  solver->analyzed_pols[idx] = pol;
   LOG2 ("%s analyzed", LOGVAR (idx));
 }
 

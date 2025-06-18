@@ -15,14 +15,14 @@ static inline void kissat_bubble_up (kissat *solver, heap *heap,
   unsigned *pos = heap->pos;
   unsigned idx_pos = pos[idx];
   const double *const score = heap->score;
-  const double idx_score = score[idx];
+  const double idx_score = score[idx * 2 + heap->lsids_pols[idx]];
   while (idx_pos) {
     const unsigned parent_pos = HEAP_PARENT (idx_pos);
     const unsigned parent = stack[parent_pos];
-    if (score[parent] >= idx_score)
+    if (score[parent * 2 + heap->lsids_pols[parent]] >= idx_score)
       break;
     LOG ("heap bubble up: %u@%u = %g swapped with %u@%u = %g", parent,
-         parent_pos, score[parent], idx, idx_pos, idx_score);
+         parent_pos, score[parent * 2 + heap->lsids_pols[parent]], idx, idx_pos, idx_score);
     stack[idx_pos] = parent;
     pos[parent] = idx_pos;
     idx_pos = parent_pos;
@@ -41,17 +41,17 @@ static inline void kissat_bubble_down (kissat *solver, heap *heap,
   unsigned *pos = heap->pos;
   unsigned idx_pos = pos[idx];
   const double *const score = heap->score;
-  const double idx_score = score[idx];
+  const double idx_score = score[idx * 2 + heap->lsids_pols[idx]];
   for (;;) {
     unsigned child_pos = HEAP_CHILD (idx_pos);
     if (child_pos >= end)
       break;
     unsigned child = stack[child_pos];
-    double child_score = score[child];
+    double child_score = score[child * 2 + heap->lsids_pols[child]];
     const unsigned sibling_pos = child_pos + 1;
     if (sibling_pos < end) {
       const unsigned sibling = stack[sibling_pos];
-      const double sibling_score = score[sibling];
+      const double sibling_score = score[sibling * 2 + heap->lsids_pols[sibling]];
       if (sibling_score > child_score) {
         child = sibling;
         child_pos = sibling_pos;
@@ -61,7 +61,7 @@ static inline void kissat_bubble_down (kissat *solver, heap *heap,
     if (child_score <= idx_score)
       break;
     LOG ("heap bubble down: %u@%u = %g swapped with %u@%u = %g", child,
-         child_pos, score[child], idx, idx_pos, idx_score);
+         child_pos, score[child * 2 + heap->lsids_pols[child]], idx, idx_pos, idx_score);
     stack[idx_pos] = child;
     pos[child] = idx_pos;
     idx_pos = child_pos;
@@ -152,12 +152,17 @@ static inline void kissat_adjust_heap (kissat *solver, heap *heap,
 
 static inline void kissat_update_heap (kissat *solver, heap *heap,
                                        unsigned idx, double new_score) {
+  // TODO: note that this might be incorrect, as is the direct access below.
+  // i.e. this may need to be updated to "update heap on a literal", right
+  // now it's "update heap for the highest literal"
+  // But some other parts of code (eliminate.c and factor.c) use this too,
+  // and we may not want them to do so
   const double old_score = kissat_get_heap_score (heap, idx);
   if (old_score == new_score)
     return;
   HEAP_IMPORT (idx);
   LOG ("update heap %u score from %g to %g", idx, old_score, new_score);
-  heap->score[idx] = new_score;
+  heap->score[idx * 2 + heap->lsids_pols[idx]] = new_score;
   if (!heap->tainted) {
     heap->tainted = true;
     LOG ("tainted heap");

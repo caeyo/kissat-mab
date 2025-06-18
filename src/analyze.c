@@ -133,7 +133,7 @@ static inline void mark_reason_side_literal (kissat *solver,
   const unsigned idx = IDX (lit);
   const assigned *a = all_assigned + idx;
   if (a->level && !a->analyzed)
-    kissat_push_analyzed (solver, all_assigned, idx);
+    kissat_push_analyzed (solver, all_assigned, idx, NEGATED (lit));
 }
 
 static inline void analyze_reason_side_literal (kissat *solver,
@@ -421,7 +421,7 @@ static void analyze_failed_literal (kissat *solver, clause *conflict) {
       continue;
     assert (a->level == 1);
     LOG ("analyzing conflict literal %s", LOGLIT (lit));
-    kissat_push_analyzed (solver, all_assigned, idx);
+    kissat_push_analyzed (solver, all_assigned, idx, NEGATED (lit));
     unresolved++;
   }
 
@@ -456,7 +456,7 @@ static void analyze_failed_literal (kissat *solver, clause *conflict) {
       assert (b->level == 1);
       if (!b->analyzed) {
         LOG ("analyzing reason literal %s", LOGLIT (other));
-        kissat_push_analyzed (solver, all_assigned, idx);
+        kissat_push_analyzed (solver, all_assigned, idx, NEGATED (lit));
         unresolved++;
       }
     } else {
@@ -486,7 +486,7 @@ static void analyze_failed_literal (kissat *solver, clause *conflict) {
         if (b->analyzed)
           continue;
         LOG ("analyzing reason literal %s", LOGLIT (other));
-        kissat_push_analyzed (solver, all_assigned, idx);
+        kissat_push_analyzed (solver, all_assigned, idx, NEGATED (lit));
         unresolved++;
       }
     }
