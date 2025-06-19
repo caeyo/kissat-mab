@@ -20,7 +20,6 @@ struct heap {
   unsigneds stack;
   double *score;
   unsigned *pos;
-  unsigned *lsids_pols;
 };
 
 struct kissat;
@@ -37,11 +36,9 @@ static inline unsigned kissat_get_heap_pos (const heap *heap,
   return idx < heap->vars ? heap->pos[idx] : DISCONTAIN;
 }
 
-// Note: will grab the heap score for the preferred pol. If a direct literal
-// score is needed then need to access directly, not via this method
 static inline double kissat_get_heap_score (const heap *heap,
                                             unsigned idx) {
-  return idx < heap->vars ? heap->score[idx * 2 + heap->lsids_pols[idx]] : 0.0;
+  return idx < heap->vars ? heap->score[idx] : 0.0;
 }
 
 static inline bool kissat_empty_heap (heap *heap) {
@@ -66,7 +63,7 @@ static inline double kissat_max_score_on_heap (heap *heap) {
     return 0;
   assert (heap->vars);
   const double *const score = heap->score;
-  const double *const end = score + heap->vars * 2;
+  const double *const end = score + heap->vars;
   double res = score[0];
   for (const double *p = score + 1; p != end; p++)
     res = MAX (res, *p);

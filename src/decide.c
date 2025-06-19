@@ -155,7 +155,6 @@ unsigned kissat_next_decision_variable (kissat *solver) {
 int kissat_decide_phase (kissat *solver, unsigned idx) {
   bool force = GET_OPTION (forcephase);
 
-  // return solver->scores.lsids_pols[idx] == 1 ? -1 : 1;
   value *target;
   if (force)
     target = 0;
@@ -185,8 +184,6 @@ int kissat_decide_phase (kissat *solver, unsigned idx) {
       res = -INITIAL_PHASE;
       break;
     }
-  } else {
-    res = solver->scores.lsids_pols[idx] == 1 ? -1 : 1;
   }
 
   if (!res && target && (res = *target)) {

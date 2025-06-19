@@ -55,19 +55,11 @@ void kissat_bump_score_increment (kissat *solver) {
 static inline void bump_analyzed_variable_score (kissat *solver,
                                                  unsigned idx) {
   heap *scores = &solver->scores;
-  const double old_score = scores->score[idx * 2 + solver->analyzed_pols[idx]];
+  const double old_score = kissat_get_heap_score (scores, idx);
   const double inc = solver->scinc;
   const double new_score = old_score + inc;
-  scores->score[idx * 2 + solver->analyzed_pols[idx]] = new_score;
   LOG ("new score[%u] = %g = %g + %g", idx, new_score, old_score, inc);
-  const double opp_score = scores->score[idx * 2 + (solver->analyzed_pols[idx] ^ 1)];
-  if (new_score >= opp_score) {  // Check if lit just bumped is above other
-    // This is true when lit just bumped has now leapt over other
-    if (scores->lsids_pols[idx] != solver->analyzed_pols[idx])
-      scores->lsids_pols[idx] ^= 1;
-    // Only update heap if the lit just bumped is the greater one
-    kissat_update_heap (solver, scores, idx, new_score);
-  }
+  kissat_update_heap (solver, scores, idx, new_score);
   if (new_score > MAX_SCORE)
     kissat_rescale_scores (solver);
 }
