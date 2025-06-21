@@ -83,6 +83,23 @@ static unsigned reuse_focused_trail (kissat *solver) {
   return res;
 }
 
+static unsigned reuse_focused_trail_lsids (kissat *solver) {
+  const lsidsheap *const heap = &solver->lsids_heap;
+  const unsigned next_idx = kissat_next_decision_variable (solver);
+  const double limit =
+      lsids_get_heap_score (heap, next_idx, heap->pol[next_idx]);
+  unsigned level = solver->level, res = 0;
+  while (res < level) {
+    frame *f = &FRAME (res + 1);
+    const unsigned idx = IDX (f->decision);
+    const double score = lsids_get_heap_score (heap, idx, heap->pol[idx]);
+    if (score <= limit)
+      break;
+    res++;
+  }
+  return res;
+}
+
 static unsigned reuse_trail (kissat *solver) {
   assert (solver->level);
   assert (!EMPTY_STACK (solver->trail));
@@ -95,7 +112,7 @@ static unsigned reuse_trail (kissat *solver) {
   if (solver->stable)
     res = reuse_stable_trail (solver);
   else
-    res = reuse_focused_trail (solver);
+    res = reuse_focused_trail_lsids (solver);
 
   LOG ("matching trail level %u", res);
 

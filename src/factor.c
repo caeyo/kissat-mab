@@ -6,6 +6,7 @@
 #include "import.h"
 #include "inline.h"
 #include "inlineheap.h"
+#include "inlinelsidsheap.h"
 #include "inlinequeue.h"
 #include "inlinevector.h"
 #include "internal.h"
@@ -852,6 +853,19 @@ adjust_scores_and_phases_of_fresh_varaibles (factoring *factoring) {
            LOGVAR (idx));
       const double score = 0;
       kissat_update_heap (solver, &solver->scores, idx, score);
+    }
+  }
+  {
+    const unsigned *p = begin;
+    while (p != end) {
+      const unsigned lit = *p++;
+      const unsigned idx = IDX (lit);
+      LOG ("lsids unbumping fresh[%zu] %s", (size_t) (p - begin - 1),
+           LOGVAR (idx));
+      const double score = 0;
+      const unsigned pref_pol = solver->lsids_heap.pol[idx];
+      lsids_update_heap (solver, &solver->lsids_heap, idx, pref_pol, score);
+      lsids_update_heap (solver, &solver->lsids_heap, idx, pref_pol ^ 1, score);
     }
   }
   {

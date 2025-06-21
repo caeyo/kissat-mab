@@ -161,7 +161,7 @@ static void switch_to_focused_mode (kissat *solver) {
   update_mode_limit (solver, delta);
   START (focused);
   REPORT (0, '{');
-  kissat_reset_search_of_queue (solver);
+  lsids_update_scores (solver);
   kissat_update_focused_restart_limit (solver);
 }
 

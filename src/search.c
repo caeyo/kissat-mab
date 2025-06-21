@@ -60,6 +60,9 @@ static void start_search (kissat *solver) {
   if (solver->stable) {
     kissat_init_reluctant (solver);
     kissat_update_scores (solver);
+  } else {
+    // TODO: maybe this needs to always happen?
+    lsids_update_scores (solver);
   }
 
   init_tiers (solver);

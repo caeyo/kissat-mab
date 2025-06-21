@@ -241,12 +241,13 @@ static inline clause *kissat_binary_conflict (kissat *solver, unsigned a,
 }
 
 static inline void kissat_push_analyzed (kissat *solver, assigned *assigned,
-                                         unsigned idx) {
+                                         unsigned idx, unsigned pol) {
   assert (idx < VARS);
   struct assigned *a = assigned + idx;
   assert (!a->analyzed);
   a->analyzed = true;
   PUSH_STACK (solver->analyzed, idx);
+  solver->analyzed_pol[idx] = pol;
   LOG2 ("%s analyzed", LOGVAR (idx));
 }
 

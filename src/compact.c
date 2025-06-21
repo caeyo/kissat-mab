@@ -1,6 +1,7 @@
 #include "compact.h"
 #include "inline.h"
 #include "inlineheap.h"
+#include "inlinelsidsheap.h"
 #include "print.h"
 #include "resize.h"
 
@@ -205,6 +206,43 @@ static void compact_scores (kissat *solver, heap *old_scores,
   *old_scores = new_scores;
 }
 
+static void compact_lsidsheap (kissat *solver, lsidsheap *old_heap,
+                               unsigned vars) {
+  LOG ("compacting lsidsheap");
+
+  lsidsheap new_heap;
+  memset (&new_heap, 0, sizeof new_heap);
+  lsids_resize_heap (solver, &new_heap, vars);
+
+  if (old_heap->tainted) {
+    LOG ("copying scores of tainted old lsidsheap");
+    for (all_variables (idx)) {
+      const unsigned midx = map_idx (solver, idx);
+      if (midx == INVALID_IDX)
+        continue;
+      const unsigned pref_pol = old_heap->pol[idx];
+      const double pref_score = lsids_get_heap_score (old_heap, idx, pref_pol);
+      lsids_update_heap (solver, &new_heap, midx, pref_pol, pref_score);
+      const unsigned opp_pol = pref_pol ^ 1;
+      const double opp_score = lsids_get_heap_score (old_heap, idx, opp_pol);
+      lsids_update_heap (solver, &new_heap, midx, opp_pol, opp_score);
+      new_heap.pol[midx] = pref_pol;
+    }
+  } else
+    LOG ("no need to copy scores of old untainted lsidsheap");
+
+  LOG ("now pushing mapped literals onto new lsidsheap");
+  for (all_stack (unsigned, idx, old_heap->stack)) {
+    const unsigned midx = map_idx (solver, idx);
+    if (midx == INVALID_IDX)
+      continue;
+    lsids_push_heap (solver, &new_heap, midx);
+  }
+
+  lsids_release_heap (solver, old_heap);
+  *old_heap = new_heap;
+}
+
 static void compact_trail (kissat *solver) {
   LOG ("compacting trail");
   const size_t size = SIZE_ARRAY (solver->trail);
@@ -364,6 +402,7 @@ void kissat_finalize_compacting (kissat *solver, unsigned vars,
   compact_queue (solver);
   compact_stack (solver, &solver->sweep_schedule);
   compact_scores (solver, SCORES, vars);
+  compact_lsidsheap (solver, &solver->lsids_heap, vars);
   compact_frames (solver);
   compact_export (solver, vars);
   compact_best_and_target_values (solver, vars);

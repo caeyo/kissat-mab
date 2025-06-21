@@ -58,6 +58,7 @@ void kissat_increase_size (kissat *solver, unsigned new_size) {
        FORMAT_BYTES (kissat_allocated (solver)), old_size, new_size);
 #endif
   CREALLOC_VARIABLE_INDEXED (assigned, assigned);
+  CREALLOC_VARIABLE_INDEXED (unsigned, analyzed_pol);
   CREALLOC_VARIABLE_INDEXED (flags, flags);
   NREALLOC_VARIABLE_INDEXED (links, links);
 
@@ -67,6 +68,7 @@ void kissat_increase_size (kissat *solver, unsigned new_size) {
 
   reallocate_trail (solver, old_size, new_size);
   kissat_resize_heap (solver, SCORES, new_size);
+  lsids_resize_heap (solver, &solver->lsids_heap, new_size);
   kissat_increase_phases (solver, new_size);
 
   solver->size = new_size;
@@ -87,6 +89,7 @@ void kissat_decrease_size (kissat *solver) {
 #endif
 
   NREALLOC_VARIABLE_INDEXED (assigned, assigned);
+  NREALLOC_VARIABLE_INDEXED (unsigned, analyzed_pol);
   NREALLOC_VARIABLE_INDEXED (flags, flags);
   NREALLOC_VARIABLE_INDEXED (links, links);
 
@@ -96,6 +99,7 @@ void kissat_decrease_size (kissat *solver) {
 
   reallocate_trail (solver, old_size, new_size);
   kissat_resize_heap (solver, SCORES, new_size);
+  lsids_resize_heap (solver, &solver->lsids_heap, new_size);
   kissat_decrease_phases (solver, new_size);
 
   solver->size = new_size;

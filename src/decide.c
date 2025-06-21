@@ -1,6 +1,7 @@
 #include "decide.h"
 #include "inlineframes.h"
 #include "inlineheap.h"
+#include "inlinelsidsheap.h"
 #include "inlinequeue.h"
 #include "print.h"
 
@@ -51,6 +52,18 @@ static unsigned largest_score_unassigned_variable (kissat *solver) {
     assert (score >= idx_score);
   }
 #endif
+  return res;
+}
+
+static unsigned largest_score_unassigned_variable_lsids (kissat *solver) {
+  lsidsheap *heap = &solver->lsids_heap;
+  unsigned res = lsids_max_heap (heap);
+  const value *const values = solver->values;
+  while (values[LIT (res)]) {
+    lsids_pop_max_heap (solver, heap);
+    res = lsids_max_heap (heap);
+  }
+  LOG ("largest score unassigned %s score %g", LOGVAR (res), score);
   return res;
 }
 
@@ -139,7 +152,7 @@ unsigned kissat_next_decision_variable (kissat *solver) {
 #ifdef LOGGING
       type = "dequeued";
 #endif
-      res = last_enqueued_unassigned_variable (solver);
+      res = largest_score_unassigned_variable_lsids (solver);
       INC (queue_decisions);
     }
   } else {
@@ -176,14 +189,7 @@ int kissat_decide_phase (kissat *solver, unsigned idx) {
   value res = 0;
 
   if (!solver->stable) {
-    switch ((solver->statistics.switched >> 1) & 7) {
-    case 1:
-      res = INITIAL_PHASE;
-      break;
-    case 3:
-      res = -INITIAL_PHASE;
-      break;
-    }
+    res = BOOL_TO_VALUE (solver->lsids_heap.pol[idx]);
   }
 
   if (!res && target && (res = *target)) {

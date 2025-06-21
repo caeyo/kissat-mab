@@ -261,11 +261,38 @@ static inline unsigned less_focused_transitive (kissat *solver,
   return s < t;
 }
 
+static inline unsigned
+less_focused_transitive_lsids (kissat *solver, const flags *const flags,
+                               const lsidsheap *heap, unsigned a,
+                               unsigned b) {
+#ifdef NDEBUG
+  (void) solver;
+#endif
+  const unsigned i = IDX (a);
+  const unsigned j = IDX (b);
+  const bool p = flags[i].transitive;
+  const bool q = flags[j].transitive;
+  if (!p && q)
+    return true;
+  if (p && !q)
+    return false;
+  const double s = lsids_get_heap_score (heap, i, heap->pol[i]);
+  const double t = lsids_get_heap_score (heap, j, heap->pol[j]);
+  if (s < t)
+    return true;
+  if (s > t)
+    return false;
+  return i < j;
+}
+
 #define LESS_STABLE_PROBE(A, B) \
   less_stable_transitive (solver, flags, scores, (A), (B))
 
 #define LESS_FOCUSED_PROBE(A, B) \
   less_focused_transitive (solver, flags, links, (A), (B))
+
+#define LESS_FOCUSED_PROBE_LSIDS(A, B) \
+  less_focused_transitive_lsids (solver, flags, heap, (A), (B))
 
 static void sort_stable_transitive (kissat *solver, unsigneds *probes) {
   const flags *const flags = solver->flags;
@@ -279,11 +306,17 @@ static void sort_focused_transitive (kissat *solver, unsigneds *probes) {
   SORT_STACK (unsigned, *probes, LESS_FOCUSED_PROBE);
 }
 
+static void sort_focused_transitive_lsids (kissat *solver, unsigneds *probes) {
+  const flags *const flags = solver->flags;
+  const lsidsheap *const heap = &solver->lsids_heap;
+  SORT_STACK (unsigned, *probes, LESS_FOCUSED_PROBE_LSIDS);
+}
+
 static void sort_transitive (kissat *solver, unsigneds *probes) {
   if (solver->stable)
     sort_stable_transitive (solver, probes);
   else
-    sort_focused_transitive (solver, probes);
+    sort_focused_transitive_lsids (solver, probes);
 }
 
 static void schedule_transitive (kissat *solver, unsigneds *probes) {

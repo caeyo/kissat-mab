@@ -1,9 +1,11 @@
 #include "inline.h"
 #include "inlineheap.h"
+#include "inlinelsidsheap.h"
 #include "inlinequeue.h"
 
 static inline void activate_literal (kissat *solver, unsigned lit) {
   const unsigned idx = IDX (lit);
+  const unsigned pol = NEGATED (lit);
   flags *f = FLAGS (idx);
   if (f->active)
     return;
@@ -17,10 +19,14 @@ static inline void activate_literal (kissat *solver, unsigned lit) {
   kissat_enqueue (solver, idx);
   const double score = 1.0 - 1.0 / solver->statistics.variables_activated;
   kissat_update_heap (solver, &solver->scores, idx, score);
+  lsids_update_heap (solver, &solver->lsids_heap, idx, pol, score);
   if (solver->stable) {
     const unsigned lit = LIT (idx);
     if (!VALUE (lit))
       kissat_push_heap (solver, &solver->scores, idx);
+  } else {
+    if (!VALUE (LIT (idx)))
+      lsids_push_heap (solver, &solver->lsids_heap, idx);
   }
   assert (solver->unassigned < UINT_MAX);
   solver->unassigned++;
@@ -45,6 +51,8 @@ static inline void deactivate_variable (kissat *solver, flags *f,
   kissat_dequeue (solver, idx);
   if (kissat_heap_contains (SCORES, idx))
     kissat_pop_heap (solver, SCORES, idx);
+  if (lsids_heap_contains (&solver->lsids_heap, idx))
+    lsids_pop_heap (solver, &solver->lsids_heap, idx);
 }
 
 void kissat_activate_literal (kissat *solver, unsigned lit) {

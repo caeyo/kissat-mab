@@ -3,6 +3,7 @@
 #include "bump.h"
 #include "inline.h"
 #include "inlineheap.h"
+#include "inlinelsidsheap.h"
 #include "inlinequeue.h"
 #include "inlinevector.h"
 #include "internal.h"
@@ -127,9 +128,29 @@ static bool less_stable_order (unsigned a, unsigned b, heap *scores,
   return b < a;
 }
 
+static bool less_focused_order_lsids (unsigned a, unsigned b,
+                                      lsidsheap *heap, double *weights) {
+  double u = weights[a], v = weights[b];
+  if (u < v)
+    return true;
+  if (u > v)
+    return false;
+  // Only need active variable, not literal, so take the preferred
+  double s = lsids_get_heap_score (heap, a, heap->pol[a]);
+  double t = lsids_get_heap_score (heap, b, heap->pol[b]);
+  if (s < t)
+    return true;
+  if (s > t)
+    return false;
+  return b < a;
+}
+
 #define LESS_FOCUSED_ORDER(A, B) less_focused_order (A, B, links, weights)
 
 #define LESS_STABLE_ORDER(A, B) less_stable_order (A, B, scores, weights)
+
+#define LESS_FOCUSED_ORDER_LSIDS(A, B) \
+  less_focused_order_lsids (A, B, heap, weights)
 
 static void sort_active_variables_by_weight (kissat *solver,
                                              unsigneds *sorted,
@@ -148,8 +169,8 @@ static void sort_active_variables_by_weight (kissat *solver,
              weights[idx], kissat_get_heap_score (scores, idx));
 #endif
   } else {
-    struct links *links = solver->links;
-    SORT_STACK (unsigned, *sorted, LESS_FOCUSED_ORDER);
+    lsidsheap *heap = &solver->lsids_heap;
+    SORT_STACK (unsigned, *sorted, LESS_FOCUSED_ORDER_LSIDS);
 #ifdef LOGGING
     for (all_stack (unsigned, idx, *sorted))
       if (ACTIVE (idx))
@@ -170,6 +191,30 @@ static void reorder_focused (kissat *solver) {
     assert (ACTIVE (idx));
     kissat_move_to_front (solver, idx);
   }
+  RELEASE_STACK (sorted);
+}
+
+static void reorder_focused_lsids (kissat *solver) {
+  INC (reordered_focused);
+  assert (!solver->stable);
+  double *weights = compute_weights (solver);
+  lsids_rescale_scores (solver);
+  unsigneds sorted;
+  sort_active_variables_by_weight (solver, &sorted, weights);
+  lsidsheap *heap = &solver->lsids_heap;
+  while (!EMPTY_STACK (sorted)) {
+    unsigned idx = POP_STACK (sorted);
+    assert (ACTIVE (idx));
+    const unsigned pol = heap->pol[idx];
+    const double old_score =
+        lsids_get_heap_score (heap, idx, pol);
+    const double weight = weights[idx];
+    const double new_score = old_score + weight;
+    LOG ("updating score of %s to %g = %g (old score) + %g (weight)",
+         LOGVAR (idx), new_score, old_score, weight);
+    lsids_update_heap (solver, heap, idx, pol, new_score);
+  }
+  kissat_dealloc (solver, weights, LITS, sizeof *weights);
   RELEASE_STACK (sorted);
 }
 
@@ -207,7 +252,7 @@ void kissat_reorder (kissat *solver) {
   if (solver->stable)
     reorder_stable (solver);
   else
-    reorder_focused (solver);
+    reorder_focused_lsids (solver);
   kissat_phase (solver, "reorder", GET (reordered),
                 "reordered decisions in %s search mode",
                 solver->stable ? "stable" : "focused");

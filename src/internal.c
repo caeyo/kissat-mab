@@ -39,6 +39,7 @@ kissat *kissat_init (void) {
   solver->watching = true;
   solver->conflict.size = 2;
   solver->scinc = 1.0;
+  solver->lsids_scinc = 1.0;
   solver->first_reducible = INVALID_REF;
   solver->last_irredundant = INVALID_REF;
   kissat_reset_last_learned (solver);
@@ -79,6 +80,7 @@ void kissat_set_prefix (kissat *solver, const char *prefix) {
 void kissat_release (kissat *solver) {
   kissat_require_initialized (solver);
   kissat_release_heap (solver, SCORES);
+  lsids_release_heap (solver, &solver->lsids_heap);
   kissat_release_heap (solver, &solver->schedule);
   kissat_release_vectors (solver);
   kissat_release_phases (solver);

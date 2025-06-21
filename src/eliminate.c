@@ -58,7 +58,10 @@ static inline double variable_score (kissat *solver, unsigned idx) {
   if (solver->stable)
     relevancy = kissat_get_heap_score (&solver->scores, idx);
   else
-    relevancy = LINK (idx).stamp;
+    // I believe this only needs to know the score for the variable, which
+    // is accessible via pref pol
+    relevancy = lsids_get_heap_score (&solver->lsids_heap, idx,
+                                      solver->lsids_heap.pol[idx]);
   double res = relevancy + score - occlim2;
   LOG ("variable score of %s computed as "
        "%g = %g + (%zu*%zu - %zu - %zu) - %g"

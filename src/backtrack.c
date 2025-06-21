@@ -3,6 +3,7 @@
 #include "inline.h"
 #include "inlineheap.h"
 #include "inlinequeue.h"
+#include "inlinelsidsheap.h"
 #include "print.h"
 #include "proprobe.h"
 #include "propsearch.h"
@@ -33,6 +34,15 @@ static inline void add_unassigned_variable_back_to_heap (kissat *solver,
   const unsigned idx = IDX (lit);
   if (!kissat_heap_contains (scores, idx))
     kissat_push_heap (solver, scores, idx);
+}
+
+static inline void
+add_unassigned_variable_back_to_heap_lsids (kissat *solver, lsidsheap *heap,
+                                            unsigned lit) {
+  assert(!solver->stable);
+  const unsigned idx = IDX (lit);
+  if (lsids_heap_contains (heap, idx))
+    lsids_push_heap (solver, heap, idx);
 }
 
 static void kissat_update_target_and_best_phases (kissat *solver) {
@@ -111,7 +121,7 @@ void kissat_backtrack_without_updating_phases (kissat *solver,
       }
     }
   } else {
-    links *links = solver->links;
+    lsidsheap *heap = &solver->lsids_heap;
     for (const unsigned *p = q; p != old_end; p++) {
       const unsigned lit = *p;
       const unsigned idx = IDX (lit);
@@ -127,7 +137,7 @@ void kissat_backtrack_without_updating_phases (kissat *solver,
         reassigned++;
       } else {
         unassign (solver, values, lit);
-        add_unassigned_variable_back_to_queue (solver, links, lit);
+        add_unassigned_variable_back_to_heap_lsids (solver, heap, lit);
         unassigned++;
       }
     }

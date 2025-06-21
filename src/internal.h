@@ -14,6 +14,7 @@
 #include "format.h"
 #include "frames.h"
 #include "heap.h"
+#include "lsidsheap.h"
 #include "kimits.h"
 #include "kissat.h"
 #include "literal.h"
@@ -128,6 +129,9 @@ struct kissat {
   heap scores;
   double scinc;
 
+  lsidsheap lsids_heap;
+  double lsids_scinc;
+
   heap schedule;
   double scoreshift;
 
@@ -153,6 +157,7 @@ struct kissat {
   dataranks ranks;
 
   unsigneds analyzed;
+  unsigned *analyzed_pol;
   unsigneds levels;
   unsigneds minimize;
   unsigneds poisoned;

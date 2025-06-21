@@ -128,6 +128,20 @@ static void dump_scores (kissat *solver) {
     printf ("scores.pos[%u] = %u\n", i, heap->pos[i]);
 }
 
+static void dump_lsids (kissat *solver) {
+  lsidsheap *heap = &solver->lsids_heap;
+  printf ("lsids.vars = %u\n", heap->vars);
+  printf ("lsids.size = %u\n", heap->size);
+  for (unsigned i = 0; i < SIZE_STACK (heap->stack); i++)
+    printf ("lsids.stack[%u] = %u\n", i, PEEK_STACK (heap->stack, i));
+  for (unsigned i = 0; i < heap->vars * 2; i++)
+    printf ("lsids.score[%u] = %g\n", i, heap->score[i]);
+  for (unsigned i = 0; i < heap->vars; i++)
+    printf ("lsids.pos[%u] = %u\n", i, heap->pos[i]);
+  for (unsigned i = 0; i < heap->vars; i++)
+    printf ("lsids.pol[%u] = %u\n", i, heap->pol[i]);
+}
+
 static void dump_export (kissat *solver) {
   const unsigned size = SIZE_STACK (solver->export);
   for (unsigned idx = 0; idx < size; idx++)
@@ -275,7 +289,7 @@ int kissat_dump (kissat *solver) {
   if (solver->stable)
     dump_scores (solver);
   else
-    dump_queue (solver);
+    dump_lsids (solver);
   dump_values (solver);
   printf ("binary = %" PRIu64 "\n", solver->statistics.clauses_binary);
   printf ("irredundant = %" PRIu64 "\n",
