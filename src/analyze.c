@@ -456,7 +456,7 @@ static void analyze_failed_literal (kissat *solver, clause *conflict) {
       assert (b->level == 1);
       if (!b->analyzed) {
         LOG ("analyzing reason literal %s", LOGLIT (other));
-        kissat_push_analyzed (solver, all_assigned, idx, NEGATED (lit));
+        kissat_push_analyzed (solver, all_assigned, idx, NEGATED (other));
         unresolved++;
       }
     } else {
@@ -486,7 +486,7 @@ static void analyze_failed_literal (kissat *solver, clause *conflict) {
         if (b->analyzed)
           continue;
         LOG ("analyzing reason literal %s", LOGLIT (other));
-        kissat_push_analyzed (solver, all_assigned, idx, NEGATED (lit));
+        kissat_push_analyzed (solver, all_assigned, idx, NEGATED (other));
         unresolved++;
       }
     }
