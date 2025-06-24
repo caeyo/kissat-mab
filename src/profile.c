@@ -24,8 +24,11 @@ static inline bool less_profile (profile *p, profile *q) {
 }
 
 static void print_profile (kissat *solver, profile *p, double total) {
-  printf ("%s%14.2f %7.2f %%  %s\n", solver->prefix, p->time,
-          kissat_percent (p->time, total), p->name);
+  if (!solver->csv_f)
+    printf ("%s%14.2f %7.2f %%  %s\n", solver->prefix, p->time,
+        kissat_percent (p->time, total), p->name);
+  else if (strcmp(p->name, "total") != 0)
+      fprintf (solver->csv_f, "%s=%.2f%% | ", p->name, kissat_percent (p->time, total));
 }
 
 static double flush_profile (profile *profile, double now) {
@@ -64,6 +67,8 @@ void kissat_profiles_print (kissat *solver) {
     print_profile (solver, sorted[i], total);
   printf ("%s=============================================\n",
           solver->prefix);
+  if (solver->csv_f)
+    fprintf(solver->csv_f, ",");
   print_profile (solver, &named->total, total);
 }
 

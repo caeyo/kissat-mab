@@ -237,6 +237,8 @@ void kissat_print_statistics (kissat *solver) {
   const int verbosity = kissat_verbosity (solver);
   if (verbosity < 0)
     return;
+  if (solver->csv)
+    solver->csv_f = fopen (solver->csv, "w");
   if (GET_OPTION (profile)) {
     kissat_section (solver, "profiling");
     kissat_profiles_print (solver);
