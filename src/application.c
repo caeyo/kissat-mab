@@ -551,6 +551,9 @@ static bool parse_options (application *application, int argc,
       ERROR ("invalid short option '%s' "
              "(configured without '-l' or '-g')",
              arg);
+    else if (!strcmp (arg, "-csv")) {
+      solver->csv = argv[++i];
+    }
 #endif
     else if (arg[0] == '-' && arg[1])
       ERROR ("invalid short option '%s' (try '-h')", arg);
@@ -861,6 +864,15 @@ static int run_application (kissat *solver, int argc, char **argv,
 #ifndef QUIET
   kissat_print_statistics (solver);
 #endif
+  if (solver->csv_f) {
+    if (res == 20)
+      fprintf (solver->csv_f, ",UNSAT");
+    else if (res == 10)
+      fprintf (solver->csv_f, ",SAT");
+    else
+      fprintf (solver->csv_f, ",INDET");
+    fclose (solver->csv_f);
+  }
 #ifndef QUIET
   kissat_section (solver, "shutting down");
   kissat_message (solver, "exit %d", res);
