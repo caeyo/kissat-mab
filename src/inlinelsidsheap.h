@@ -5,10 +5,6 @@
 #include "internal.h"
 #include "logging.h"
 
-#define HEAP_CHILD(POS) (assert ((POS) < (1u << 31)), (2 * (POS) + 1))
-
-#define HEAP_PARENT(POS) (assert ((POS) > 0), (((POS) - 1) / 2))
-
 static inline void lsids_bubble_up (kissat *solver, lsidsheap *heap,
                                      unsigned idx) {
   unsigned *stack = BEGIN_STACK (heap->stack);
@@ -73,20 +69,18 @@ static inline void lsids_bubble_down (kissat *solver, lsidsheap *heap,
 #endif
 }
 
-#define HEAP_IMPORT(IDX) \
+#define LSIDS_HEAP_IMPORT(IDX) \
   do { \
     assert ((IDX) < UINT_MAX - 1); \
     if (heap->vars <= (IDX)) \
       lsids_enlarge_heap (solver, heap, (IDX) + 1); \
   } while (0)
 
-#define CHECK_HEAP_IMPORTED(IDX)
-
 static inline void lsids_push_heap (kissat *solver, lsidsheap *heap,
                                      unsigned idx) {
   LOG ("push heap %u", idx);
   assert (!lsids_heap_contains (heap, idx));
-  HEAP_IMPORT (idx);
+  LSIDS_HEAP_IMPORT (idx);
   heap->pos[idx] = SIZE_STACK (heap->stack);
   PUSH_STACK (heap->stack, idx);
   lsids_bubble_up (solver, heap, idx);
@@ -150,7 +144,7 @@ static inline void lsids_update_heap (kissat *solver, lsidsheap *heap,
   const double old_score = lsids_get_heap_score (heap, idx, pol);
   if (old_score == new_score)
     return;
-  HEAP_IMPORT (idx);
+  LSIDS_HEAP_IMPORT (idx);
   LOG ("update heap %u score from %g to %g", idx, old_score, new_score);
   heap->score[SCORE_IDX (idx, pol)] = new_score;
   if (!heap->tainted) {

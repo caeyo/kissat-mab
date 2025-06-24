@@ -8,9 +8,6 @@
 #include <limits.h>
 #include <stdbool.h>
 
-#define DISCONTAIN UINT_MAX
-#define DISCONTAINED(IDX) ((int) (IDX) < 0)
-
 #define PREF_SCORE_IDX(IDX) ((IDX << 1) | heap->pol[IDX])
 #define SCORE_IDX(IDX, POL) ((IDX << 1) | POL)
 
