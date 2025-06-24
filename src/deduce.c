@@ -48,7 +48,7 @@ static inline bool analyze_literal (kissat *solver, assigned *all_assigned,
   if (a->analyzed)
     return false;
   LOG ("analyzing literal %s", LOGLIT (lit));
-  kissat_push_analyzed (solver, all_assigned, idx, NEGATED (lit));
+  kissat_push_analyzed (solver, all_assigned, lit);
   assert (level <= solver->level);
 #if defined(LOGGING) || !defined(NDEBUG)
   PUSH_STACK (solver->resolvent, lit);

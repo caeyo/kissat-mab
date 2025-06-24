@@ -165,7 +165,6 @@ int kissat_decide_phase (kissat *solver, unsigned idx) {
   value res = 0;
 
   if (!solver->stable) {
-    // TODO: check this is firing and working
     res = BOOL_TO_VALUE (solver->lsids_heap.pol[idx]);
   }
 

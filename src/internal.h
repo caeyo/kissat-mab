@@ -143,7 +143,6 @@ struct kissat {
   unsigned antecedent_size;
 
   unsigneds analyzed;
-  unsigned *analyzed_pol;
   unsigneds levels;
   unsigneds minimize;
   unsigneds poisoned;

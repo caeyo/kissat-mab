@@ -265,10 +265,8 @@ static unsigned backbone_analyze (kissat *solver, clause *conflict) {
 
   assigned *const assigned = solver->assigned;
 
-  kissat_push_analyzed (solver, assigned, IDX (conflict->lits[0]),
-                        NEGATED (conflict->lits[0]));
-  kissat_push_analyzed (solver, assigned, IDX (conflict->lits[1]),
-                        NEGATED (conflict->lits[1]));
+  kissat_push_analyzed (solver, assigned, conflict->lits[0]);
+  kissat_push_analyzed (solver, assigned, conflict->lits[1]);
 
   const unsigned *t = END_ARRAY (solver->trail);
 
@@ -291,7 +289,7 @@ static unsigned backbone_analyze (kissat *solver, clause *conflict) {
     if (!b->analyzed) {
       LOG ("reason %s of %s not yet analyzed", LOGLIT (reason),
            LOGLIT (lit));
-      kissat_push_analyzed (solver, assigned, reason_idx, NEGATED (reason));
+      kissat_push_analyzed (solver, assigned, reason);
     } else {
       LOG ("backbone UIP %s", LOGLIT (reason));
       kissat_reset_only_analyzed_literals (solver);

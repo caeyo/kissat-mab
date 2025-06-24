@@ -133,7 +133,7 @@ static inline void mark_reason_side_literal (kissat *solver,
   const unsigned idx = IDX (lit);
   const assigned *a = all_assigned + idx;
   if (a->level && !a->analyzed)
-    kissat_push_analyzed (solver, all_assigned, idx, NEGATED (lit));
+    kissat_push_analyzed (solver, all_assigned, lit);
 }
 
 static inline void analyze_reason_side_literal (kissat *solver,
@@ -200,7 +200,8 @@ static void analyze_reason_side_literals (kissat *solver) {
   if (SIZE_STACK (solver->analyzed) > limit) {
     LOG ("too many additional reason side literals");
     while (SIZE_STACK (solver->analyzed) > saved) {
-      const unsigned idx = POP_STACK (solver->analyzed);
+      const unsigned lit = POP_STACK (solver->analyzed);
+      const unsigned idx = IDX (lit);
       struct assigned *a = all_assigned + idx;
       LOG ("marking %s as not analyzed", LOGVAR (idx));
       assert (a->analyzed);
@@ -326,7 +327,8 @@ static void reset_levels (kissat *solver) {
 void kissat_reset_only_analyzed_literals (kissat *solver) {
   LOG ("reset %zu analyzed variables", SIZE_STACK (solver->analyzed));
   assigned *assigned = solver->assigned;
-  for (all_stack (unsigned, idx, solver->analyzed)) {
+  for (all_stack (unsigned, lit, solver->analyzed)) {
+    const unsigned idx = IDX (lit);
     assert (idx < VARS);
     struct assigned *a = assigned + idx;
     assert (!a->poisoned);
@@ -421,7 +423,7 @@ static void analyze_failed_literal (kissat *solver, clause *conflict) {
       continue;
     assert (a->level == 1);
     LOG ("analyzing conflict literal %s", LOGLIT (lit));
-    kissat_push_analyzed (solver, all_assigned, idx, NEGATED (lit));
+    kissat_push_analyzed (solver, all_assigned, lit);
     unresolved++;
   }
 
@@ -456,7 +458,7 @@ static void analyze_failed_literal (kissat *solver, clause *conflict) {
       assert (b->level == 1);
       if (!b->analyzed) {
         LOG ("analyzing reason literal %s", LOGLIT (other));
-        kissat_push_analyzed (solver, all_assigned, idx, NEGATED (other));
+        kissat_push_analyzed (solver, all_assigned, other);
         unresolved++;
       }
     } else {
@@ -486,7 +488,7 @@ static void analyze_failed_literal (kissat *solver, clause *conflict) {
         if (b->analyzed)
           continue;
         LOG ("analyzing reason literal %s", LOGLIT (other));
-        kissat_push_analyzed (solver, all_assigned, idx, NEGATED (other));
+        kissat_push_analyzed (solver, all_assigned, other);
         unresolved++;
       }
     }

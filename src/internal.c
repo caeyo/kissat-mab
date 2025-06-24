@@ -89,7 +89,6 @@ void kissat_release (kissat *solver) {
 
   DEALLOC_VARIABLE_INDEXED (assigned);
   DEALLOC_VARIABLE_INDEXED (flags);
-  DEALLOC_VARIABLE_INDEXED (analyzed_pol);
 
   DEALLOC_LITERAL_INDEXED (marks);
   DEALLOC_LITERAL_INDEXED (values);

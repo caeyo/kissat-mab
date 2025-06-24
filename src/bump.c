@@ -55,9 +55,11 @@ void kissat_bump_variable (kissat *solver, unsigned idx) {
 static void bump_analyzed_variable_scores (kissat *solver) {
   flags *flags = solver->flags;
 
-  for (all_stack (unsigned, idx, solver->analyzed))
+  for (all_stack (unsigned, lit, solver->analyzed)) {
+    const unsigned idx = IDX (lit);
     if (flags[idx].active)
       bump_analyzed_variable_score (solver, idx);
+  }
 
   kissat_bump_score_increment (solver);
 }
@@ -90,8 +92,9 @@ void lsids_bump_score_increment (kissat *solver) {
 }
 
 static inline void bump_analyzed_literal_score (kissat *solver,
-                                                 unsigned idx,
-                                                 unsigned pol) {
+                                                 unsigned lit) {
+  const unsigned idx = IDX (lit);
+  const unsigned pol = NEGATED (lit);
   lsidsheap *heap = &solver->lsids_heap;
   const double old_score = lsids_get_heap_score (heap, idx, pol);
   const double inc = solver->lsids_scinc;
@@ -105,9 +108,9 @@ static inline void bump_analyzed_literal_score (kissat *solver,
 static void bump_analyzed_literal_scores (kissat *solver) {
   flags *flags = solver->flags;
 
-  for (all_stack (unsigned, idx, solver->analyzed))
-    if (flags[idx].active)
-      bump_analyzed_literal_score (solver, idx, solver->analyzed_pol[idx]);
+  for (all_stack (unsigned, lit, solver->analyzed))
+    if (flags[IDX (lit)].active)
+      bump_analyzed_literal_score (solver, lit);
 
   lsids_bump_score_increment (solver);
 }

@@ -129,7 +129,7 @@ static inline unsigned shrunken_block (kissat *solver, unsigned level,
   assigned *assigned = solver->assigned;
   struct assigned *a = assigned + uip_idx;
   if (!a->analyzed)
-    kissat_push_analyzed (solver, assigned, uip_idx, NEGATED (uip));
+    kissat_push_analyzed (solver, assigned, uip);
 
   mark_shrinkable_as_removable (solver);
 #ifndef LOGGING
