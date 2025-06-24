@@ -23,7 +23,6 @@
 #include "phases.h"
 #include "profile.h"
 #include "proof.h"
-#include "queue.h"
 #include "random.h"
 #include "reluctant.h"
 #include "rephase.h"
@@ -33,13 +32,6 @@
 #include "value.h"
 #include "vector.h"
 #include "watch.h"
-
-typedef struct datarank datarank;
-
-struct datarank {
-  unsigned data;
-  unsigned rank;
-};
 
 typedef struct import import;
 
@@ -66,7 +58,6 @@ struct termination {
 
 typedef STACK (value) eliminated;
 typedef STACK (import) imports;
-typedef STACK (datarank) dataranks;
 typedef STACK (watch) statches;
 typedef STACK (watch *) patches;
 
@@ -123,9 +114,6 @@ struct kissat {
   eliminated eliminated;
   unsigneds etrail;
 
-  links *links;
-  queue queue;
-
   heap scores;
   double scinc;
 
@@ -153,8 +141,6 @@ struct kissat {
 #endif
   unsigned resolvent_size;
   unsigned antecedent_size;
-
-  dataranks ranks;
 
   unsigneds analyzed;
   unsigned *analyzed_pol;

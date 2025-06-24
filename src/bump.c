@@ -2,29 +2,12 @@
 #include "analyze.h"
 #include "inlineheap.h"
 #include "inlinelsidsheap.h"
-#include "inlinequeue.h"
 #include "inlinevector.h"
 #include "internal.h"
 #include "logging.h"
 #include "print.h"
 #include "rank.h"
 #include "sort.h"
-
-#define RANK(A) ((A).rank)
-#define SMALLER(A, B) (RANK (A) < RANK (B))
-
-#define RADIX_SORT_BUMP_LIMIT 32
-
-static void sort_bump (kissat *solver) {
-  const size_t size = SIZE_STACK (solver->analyzed);
-  if (size < RADIX_SORT_BUMP_LIMIT) {
-    LOG ("quick sorting %zu analyzed variables", size);
-    SORT_STACK (datarank, solver->ranks, SMALLER);
-  } else {
-    LOG ("radix sorting %zu analyzed variables", size);
-    RADIX_STACK (datarank, unsigned, solver->ranks, RANK);
-  }
-}
 
 void kissat_rescale_scores (kissat *solver) {
   INC (rescaled);
@@ -127,28 +110,6 @@ static void bump_analyzed_literal_scores (kissat *solver) {
       bump_analyzed_literal_score (solver, idx, solver->analyzed_pol[idx]);
 
   lsids_bump_score_increment (solver);
-}
-
-static void move_analyzed_variables_to_front_of_queue (kissat *solver) {
-  assert (EMPTY_STACK (solver->ranks));
-  const links *const links = solver->links;
-  for (all_stack (unsigned, idx, solver->analyzed)) {
-    // clang-format off
-    const datarank rank = { .data = idx, .rank = links[idx].stamp };
-    // clang-format on
-    PUSH_STACK (solver->ranks, rank);
-  }
-
-  sort_bump (solver);
-
-  flags *flags = solver->flags;
-  unsigned idx;
-
-  for (all_stack (datarank, rank, solver->ranks))
-    if (flags[idx = rank.data].active)
-      kissat_move_to_front (solver, idx);
-
-  CLEAR_STACK (solver->ranks);
 }
 
 void kissat_bump_analyzed (kissat *solver) {

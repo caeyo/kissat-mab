@@ -66,23 +66,6 @@ static unsigned reuse_stable_trail (kissat *solver) {
   return res;
 }
 
-static unsigned reuse_focused_trail (kissat *solver) {
-  const links *const links = solver->links;
-  const unsigned next_idx = kissat_next_decision_variable (solver);
-  const unsigned limit = links[next_idx].stamp;
-  LOG ("next decision variable stamp %u", limit);
-  unsigned level = solver->level, res = 0;
-  while (res < level) {
-    frame *f = &FRAME (res + 1);
-    const unsigned idx = IDX (f->decision);
-    const unsigned score = links[idx].stamp;
-    if (score <= limit)
-      break;
-    res++;
-  }
-  return res;
-}
-
 static unsigned reuse_focused_trail_lsids (kissat *solver) {
   const lsidsheap *const heap = &solver->lsids_heap;
   const unsigned next_idx = kissat_next_decision_variable (solver);

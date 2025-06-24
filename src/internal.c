@@ -33,7 +33,6 @@ kissat *kissat_init (void) {
   kissat_init_profiles (&solver->profiles);
 #endif
   START (total);
-  kissat_init_queue (solver);
   assert (INTERNAL_MAX_LIT < UINT_MAX);
   kissat_push_frame (solver, UINT_MAX);
   solver->watching = true;
@@ -90,7 +89,7 @@ void kissat_release (kissat *solver) {
 
   DEALLOC_VARIABLE_INDEXED (assigned);
   DEALLOC_VARIABLE_INDEXED (flags);
-  DEALLOC_VARIABLE_INDEXED (links);
+  DEALLOC_VARIABLE_INDEXED (analyzed_pol);
 
   DEALLOC_LITERAL_INDEXED (marks);
   DEALLOC_LITERAL_INDEXED (values);
@@ -129,8 +128,6 @@ void kissat_release (kissat *solver) {
   RELEASE_STACK (solver->xorted[1]);
 
   RELEASE_STACK (solver->sweep_schedule);
-
-  RELEASE_STACK (solver->ranks);
 
   RELEASE_STACK (solver->antecedents[0]);
   RELEASE_STACK (solver->antecedents[1]);

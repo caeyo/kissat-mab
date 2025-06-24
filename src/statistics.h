@@ -164,7 +164,7 @@
   COUNTER (probings, 2, CONF_INT, "", "interval") \
   COUNTER (probing_ticks, 2, PCNT_TICKS, "%", "ticks") \
   COUNTER (propagations, 0, PER_SECOND, "", "per second") \
-  STATISTIC (queue_decisions, 1, PCNT_DECISIONS, "%", "decision") \
+  STATISTIC (lsids_decisions, 1, PCNT_DECISIONS, "%", "decision") \
   STATISTIC (random_decisions, 1, PCNT_DECISIONS, "%", "decision") \
   COUNTER (random_sequences, 2, CONF_INT, "", "interval") \
   COUNTER (reductions, 1, CONF_INT, "", "interval") \

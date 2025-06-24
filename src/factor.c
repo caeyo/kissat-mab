@@ -7,7 +7,6 @@
 #include "inline.h"
 #include "inlineheap.h"
 #include "inlinelsidsheap.h"
-#include "inlinequeue.h"
 #include "inlinevector.h"
 #include "internal.h"
 #include "logging.h"
@@ -867,43 +866,6 @@ adjust_scores_and_phases_of_fresh_varaibles (factoring *factoring) {
       lsids_update_heap (solver, &solver->lsids_heap, idx, pref_pol, score);
       lsids_update_heap (solver, &solver->lsids_heap, idx, pref_pol ^ 1, score);
     }
-  }
-  {
-    const unsigned *p = end;
-    links *links = solver->links;
-    queue *queue = &solver->queue;
-    while (p != begin) {
-      const unsigned lit = *--p;
-      const unsigned idx = IDX (lit);
-      kissat_dequeue_links (idx, links, queue);
-    }
-    queue->stamp = 0;
-    unsigned rest = queue->first;
-    p = end;
-    while (p != begin) {
-      const unsigned lit = *--p;
-      const unsigned idx = IDX (lit);
-      struct links *l = links + idx;
-      if (DISCONNECTED (queue->first)) {
-        assert (DISCONNECTED (queue->last));
-        queue->last = idx;
-      } else {
-        struct links *first = links + queue->first;
-        assert (DISCONNECTED (first->prev));
-        first->prev = idx;
-      }
-      l->next = queue->first;
-      queue->first = idx;
-      assert (DISCONNECTED (l->prev));
-      l->stamp = ++queue->stamp;
-    }
-    while (!DISCONNECTED (rest)) {
-      struct links *l = links + rest;
-      l->stamp = ++queue->stamp;
-      rest = l->next;
-    }
-    solver->queue.search.idx = queue->last;
-    solver->queue.search.stamp = queue->stamp;
   }
 }
 

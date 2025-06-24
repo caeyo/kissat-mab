@@ -102,20 +102,6 @@ static void dump_values (kissat *solver) {
   }
 }
 
-static void dump_queue (kissat *solver) {
-  const queue *const queue = &solver->queue;
-  printf ("queue: first %u, last %u, stamp %u, search %u (stamp %u)\n",
-          queue->first, queue->last, queue->stamp, queue->search.idx,
-          queue->search.stamp);
-  const links *const links = solver->links;
-  for (unsigned idx = queue->first; !DISCONNECTED (idx);
-       idx = links[idx].next) {
-    const struct links *l = links + idx;
-    printf ("%u ( prev %u, next %u, stamp %u )\n", idx, l->prev, l->next,
-            l->stamp);
-  }
-}
-
 static void dump_scores (kissat *solver) {
   heap *heap = SCORES;
   printf ("scores.vars = %u\n", heap->vars);

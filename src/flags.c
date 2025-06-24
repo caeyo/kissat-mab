@@ -1,7 +1,6 @@
 #include "inline.h"
 #include "inlineheap.h"
 #include "inlinelsidsheap.h"
-#include "inlinequeue.h"
 
 static inline void activate_literal (kissat *solver, unsigned lit) {
   const unsigned idx = IDX (lit);
@@ -16,7 +15,6 @@ static inline void activate_literal (kissat *solver, unsigned lit) {
   assert (!f->eliminated);
   solver->active++;
   INC (variables_activated);
-  kissat_enqueue (solver, idx);
   const double score = 1.0 - 1.0 / solver->statistics.variables_activated;
   kissat_update_heap (solver, &solver->scores, idx, score);
   lsids_update_heap (solver, &solver->lsids_heap, idx, pol, score);
@@ -48,7 +46,6 @@ static inline void deactivate_variable (kissat *solver, flags *f,
   f->active = false;
   assert (solver->active > 0);
   solver->active--;
-  kissat_dequeue (solver, idx);
   if (kissat_heap_contains (SCORES, idx))
     kissat_pop_heap (solver, SCORES, idx);
   if (lsids_heap_contains (&solver->lsids_heap, idx))

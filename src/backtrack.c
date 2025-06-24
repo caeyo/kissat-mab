@@ -2,7 +2,6 @@
 #include "analyze.h"
 #include "inline.h"
 #include "inlineheap.h"
-#include "inlinequeue.h"
 #include "inlinelsidsheap.h"
 #include "print.h"
 #include "proprobe.h"
@@ -16,15 +15,6 @@ static inline void unassign (kissat *solver, value *values, unsigned lit) {
   values[lit] = values[not_lit] = 0;
   assert (solver->unassigned < VARS);
   solver->unassigned++;
-}
-
-static inline void add_unassigned_variable_back_to_queue (kissat *solver,
-                                                          links *links,
-                                                          unsigned lit) {
-  assert (!solver->stable);
-  const unsigned idx = IDX (lit);
-  if (links[idx].stamp > solver->queue.search.stamp)
-    kissat_update_queue (solver, links, idx);
 }
 
 static inline void add_unassigned_variable_back_to_heap (kissat *solver,

@@ -133,33 +133,6 @@ static unsigned map_idx (kissat *solver, unsigned iidx) {
   return midx;
 }
 
-static void compact_queue (kissat *solver) {
-  LOG ("compacting queue");
-  links *links = solver->links, *l;
-  unsigned *p = &solver->queue.first, prev = DISCONNECT;
-  solver->queue.stamp = 0;
-  for (unsigned idx; !DISCONNECTED (idx = *p); p = &l->next) {
-    const unsigned midx = map_idx (solver, idx);
-    assert (midx != INVALID_IDX);
-    l = links + idx;
-    l->prev = prev;
-    l->stamp = ++solver->queue.stamp;
-    if (idx == solver->queue.search.idx) {
-      solver->queue.search.idx = midx;
-      solver->queue.search.stamp = l->stamp;
-    }
-    *p = prev = midx;
-  }
-  solver->queue.last = prev;
-  *p = DISCONNECT;
-  for (all_variables (idx)) {
-    const unsigned midx = map_idx (solver, idx);
-    if (midx == INVALID_IDX)
-      continue;
-    links[midx] = links[idx];
-  }
-}
-
 static void compact_stack (kissat *solver, unsigneds *stack) {
   unsigned *q = BEGIN_STACK (*stack);
   const unsigned *const end = END_STACK (*stack);
@@ -399,7 +372,6 @@ void kissat_finalize_compacting (kissat *solver, unsigned vars,
   memset (solver->values + 2 * vars, 0, 2 * reduced * sizeof (value));
   memset (solver->watches + 2 * vars, 0, 2 * reduced * sizeof (watches));
 
-  compact_queue (solver);
   compact_stack (solver, &solver->sweep_schedule);
   compact_scores (solver, SCORES, vars);
   compact_lsidsheap (solver, &solver->lsids_heap, vars);

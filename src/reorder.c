@@ -4,7 +4,6 @@
 #include "inline.h"
 #include "inlineheap.h"
 #include "inlinelsidsheap.h"
-#include "inlinequeue.h"
 #include "inlinevector.h"
 #include "internal.h"
 #include "logging.h"
@@ -101,17 +100,6 @@ static double *compute_weights (kissat *solver) {
   return weights;
 }
 
-static bool less_focused_order (unsigned a, unsigned b, links *links,
-                                double *weights) {
-  double u = weights[a], v = weights[b];
-  if (u < v)
-    return true;
-  if (u > v)
-    return false;
-  unsigned s = links[a].stamp, t = links[b].stamp;
-  return s < t;
-}
-
 static bool less_stable_order (unsigned a, unsigned b, heap *scores,
                                double *weights) {
   double u = weights[a], v = weights[b];
@@ -145,8 +133,6 @@ static bool less_focused_order_lsids (unsigned a, unsigned b,
   return b < a;
 }
 
-#define LESS_FOCUSED_ORDER(A, B) less_focused_order (A, B, links, weights)
-
 #define LESS_STABLE_ORDER(A, B) less_stable_order (A, B, scores, weights)
 
 #define LESS_FOCUSED_ORDER_LSIDS(A, B) \
@@ -171,27 +157,7 @@ static void sort_active_variables_by_weight (kissat *solver,
   } else {
     lsidsheap *heap = &solver->lsids_heap;
     SORT_STACK (unsigned, *sorted, LESS_FOCUSED_ORDER_LSIDS);
-#ifdef LOGGING
-    for (all_stack (unsigned, idx, *sorted))
-      if (ACTIVE (idx))
-        LOG ("reordered %s with weight %g stamp %u", LOGVAR (idx),
-             weights[idx], links[idx].stamp);
-#endif
   }
-}
-
-static void reorder_focused (kissat *solver) {
-  INC (reordered_focused);
-  assert (!solver->stable);
-  double *weights = compute_weights (solver);
-  unsigneds sorted;
-  sort_active_variables_by_weight (solver, &sorted, weights);
-  kissat_dealloc (solver, weights, LITS, sizeof *weights);
-  for (all_stack (unsigned, idx, sorted)) {
-    assert (ACTIVE (idx));
-    kissat_move_to_front (solver, idx);
-  }
-  RELEASE_STACK (sorted);
 }
 
 static void reorder_focused_lsids (kissat *solver) {

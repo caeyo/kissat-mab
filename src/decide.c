@@ -2,33 +2,9 @@
 #include "inlineframes.h"
 #include "inlineheap.h"
 #include "inlinelsidsheap.h"
-#include "inlinequeue.h"
 #include "print.h"
 
 #include <inttypes.h>
-
-static unsigned last_enqueued_unassigned_variable (kissat *solver) {
-  assert (solver->unassigned);
-  const links *const links = solver->links;
-  const value *const values = solver->values;
-  unsigned res = solver->queue.search.idx;
-  if (values[LIT (res)]) {
-    do {
-      res = links[res].prev;
-      assert (!DISCONNECTED (res));
-    } while (values[LIT (res)]);
-    kissat_update_queue (solver, links, res);
-  }
-#ifdef LOGGING
-  const unsigned stamp = links[res].stamp;
-  LOG ("last enqueued unassigned %s stamp %u", LOGVAR (res), stamp);
-#endif
-#ifdef CHECK_QUEUE
-  for (unsigned i = links[res].next; !DISCONNECTED (i); i = links[i].next)
-    assert (VALUE (LIT (i)));
-#endif
-  return res;
-}
 
 static unsigned largest_score_unassigned_variable (kissat *solver) {
   heap *scores = SCORES;
@@ -150,10 +126,10 @@ unsigned kissat_next_decision_variable (kissat *solver) {
       INC (score_decisions);
     } else {
 #ifdef LOGGING
-      type = "dequeued";
+      type = "lsids max";
 #endif
       res = largest_score_unassigned_variable_lsids (solver);
-      INC (queue_decisions);
+      INC (lsids_decisions);
     }
   } else {
 #ifdef LOGGING
@@ -189,6 +165,7 @@ int kissat_decide_phase (kissat *solver, unsigned idx) {
   value res = 0;
 
   if (!solver->stable) {
+    // TODO: check this is firing and working
     res = BOOL_TO_VALUE (solver->lsids_heap.pol[idx]);
   }
 
