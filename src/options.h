@@ -32,6 +32,7 @@
   OPTION (congruencexorcounts, 2, 1, INT_MAX, "XOR counting rounds") \
   OPTION (congruencexors, 1, 0, 1, "extract XOR gates for congruence closure") \
   OPTION (decay, 50, 1, 200, "per mille scores decay") \
+  OPTION (decaylsids, 50, 1, 200, "per mille scores decay for lsids") \
   OPTION (definitioncores, 2, 1, 100, "how many cores") \
   OPTION (definitions, 1, 0, 1, "extract general definitions") \
   OPTION (definitionticks, 1e6, 0, INT_MAX, "kitten ticks limits") \

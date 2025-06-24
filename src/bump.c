@@ -79,7 +79,7 @@ void lsids_rescale_scores (kissat *solver) {
 
 void lsids_bump_score_increment (kissat *solver) {
   const double old_scinc = solver->lsids_scinc;
-  const double decay = GET_OPTION (decay) * 1e-3;
+  const double decay = GET_OPTION (decaylsids) * 1e-3;
   assert (0 <= decay), assert (decay <= 0.5);
   const double factor = 1.0 / (1.0 - decay);
   const double new_scinc = old_scinc * factor;
