@@ -433,20 +433,31 @@ void kissat_print_glue_usage (struct kissat *);
 
 #define PRINT_STAT(NAME, PRIMARY, SECONDARY, UNITS, TYPE) \
   do { \
-    printf ("%s%-" SFW1 "s %" SFW2 PRIu64 " ", solver->prefix, NAME ":", \
-            (uint64_t) PRIMARY); \
-    const double SAVED_SECONDARY = (double) (SECONDARY); \
-    const char *SAVED_UNITS = (const char *) (UNITS); \
-    const char *SAVED_TYPE = (const char *) (TYPE); \
-    if (SAVED_TYPE && SAVED_SECONDARY >= 0) { \
+    if (solver->csv_f) { \
+      const double SAVED_SECONDARY = (double) (SECONDARY); \
+      const char *SAVED_UNITS = (const char *) (UNITS); \
+      const char *SAVED_TYPE = (const char *) (TYPE); \
+      fprintf (solver->csv_f, "%s=%" PRIu64, NAME, (uint64_t) PRIMARY); \
       if (SAVED_UNITS) \
-        printf ("%" SFW34 ".0f %-2s", SAVED_SECONDARY, SAVED_UNITS); \
+        fprintf (solver->csv_f, " (%.0f%s %s) | ", SAVED_SECONDARY, SAVED_UNITS, SAVED_TYPE); \
       else \
-        printf ("%" SFW34EXTENDED ".2f", SAVED_SECONDARY); \
-      fputc (' ', stdout); \
-      fputs (SAVED_TYPE, stdout); \
+        fprintf (solver->csv_f, " (%.2f %s) | ", SAVED_SECONDARY, SAVED_TYPE); \
+    } else { \
+      printf ("%s%-" SFW1 "s %" SFW2 PRIu64 " ", solver->prefix, NAME ":", \
+              (uint64_t) PRIMARY); \
+      const double SAVED_SECONDARY = (double) (SECONDARY); \
+      const char *SAVED_UNITS = (const char *) (UNITS); \
+      const char *SAVED_TYPE = (const char *) (TYPE); \
+      if (SAVED_TYPE && SAVED_SECONDARY >= 0) { \
+        if (SAVED_UNITS) \
+          printf ("%" SFW34 ".0f %-2s", SAVED_SECONDARY, SAVED_UNITS); \
+        else \
+          printf ("%" SFW34EXTENDED ".2f", SAVED_SECONDARY); \
+        fputc (' ', stdout); \
+        fputs (SAVED_TYPE, stdout); \
+      } \
+      fputc ('\n', stdout); \
     } \
-    fputc ('\n', stdout); \
   } while (0)
 
 #endif

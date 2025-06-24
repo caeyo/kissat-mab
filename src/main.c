@@ -1,6 +1,7 @@
 #include "application.h"
 #include "cover.h"
 #include "handle.h"
+#include "internal.h"
 #include "kissat.h"
 #include "print.h"
 
@@ -16,6 +17,10 @@ kissat_signal_handler (int sig)
 {
   kissat_signal (solver, "caught", sig);
   kissat_print_statistics (solver);
+  if (solver->csv_f) {
+    fprintf(solver->csv_f, ",INDET");
+    fclose(solver->csv_f);
+  }
   kissat_signal (solver, "raising", sig);
 #ifdef QUIET
   (void) sig;

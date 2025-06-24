@@ -242,6 +242,9 @@ struct kissat {
 #endif
 
   statistics statistics;
+
+  const char *csv;
+  FILE *csv_f;
 };
 
 #define VARS (solver->vars)

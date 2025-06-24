@@ -72,6 +72,10 @@ uint64_t kissat_current_resident_set_size (void) {
 void kissat_print_resources (kissat *solver) {
   uint64_t rss = kissat_maximum_resident_set_size ();
   double t = kissat_time (solver);
+  if (solver->csv_f) {
+    fprintf(solver->csv_f, ",%.0f,%.2f", rss / (double) (1 << 20), t);
+    return;
+  }
   printf ("%s"
           "%-" SFW1 "s "
           "%" SFW2 PRIu64 " "
