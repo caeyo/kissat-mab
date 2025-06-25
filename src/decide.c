@@ -39,7 +39,6 @@ static unsigned largest_score_unassigned_variable_lsids (kissat *solver) {
     lsids_pop_max_heap (solver, heap);
     res = lsids_max_heap (heap);
   }
-  LOG ("largest score unassigned %s score %g", LOGVAR (res), score);
   return res;
 }
 

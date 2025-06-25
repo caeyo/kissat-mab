@@ -31,7 +31,7 @@ add_unassigned_variable_back_to_heap_lsids (kissat *solver, lsidsheap *heap,
                                             unsigned lit) {
   assert(!solver->stable);
   const unsigned idx = IDX (lit);
-  if (lsids_heap_contains (heap, idx))
+  if (!lsids_heap_contains (heap, idx))
     lsids_push_heap (solver, heap, idx);
 }
 
