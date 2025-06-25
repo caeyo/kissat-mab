@@ -440,8 +440,10 @@ void kissat_print_glue_usage (struct kissat *);
       fprintf (solver->csv_f, "%s=%" PRIu64, NAME, (uint64_t) PRIMARY); \
       if (SAVED_UNITS) \
         fprintf (solver->csv_f, " (%.0f%s %s) | ", SAVED_SECONDARY, SAVED_UNITS, SAVED_TYPE); \
-      else \
+      else if (SAVED_TYPE) \
         fprintf (solver->csv_f, " (%.2f %s) | ", SAVED_SECONDARY, SAVED_TYPE); \
+      else  \
+        fprintf (solver->csv_f, " (%.2f) | ", SAVED_SECONDARY); \
     } else { \
       printf ("%s%-" SFW1 "s %" SFW2 PRIu64 " ", solver->prefix, NAME ":", \
               (uint64_t) PRIMARY); \
