@@ -24,6 +24,7 @@ void kissat_increase_phases (kissat *solver, unsigned new_size) {
   increase_phases (best);
   increase_phases (saved);
   increase_phases (target);
+  increase_phases (analyzed);
 }
 
 void kissat_decrease_phases (kissat *solver, unsigned new_size) {
@@ -33,6 +34,7 @@ void kissat_decrease_phases (kissat *solver, unsigned new_size) {
   realloc_phases (best);
   realloc_phases (saved);
   realloc_phases (target);
+  realloc_phases (analyzed);
 }
 
 #define release_phases(NAME, SIZE) \
@@ -43,6 +45,7 @@ void kissat_release_phases (kissat *solver) {
   release_phases (best, size);
   release_phases (saved, size);
   release_phases (target, size);
+  release_phases (analyzed, size);
 }
 
 static void save_phases (kissat *solver, value *phases) {

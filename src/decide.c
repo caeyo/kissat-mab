@@ -176,15 +176,7 @@ int kissat_decide_phase (kissat *solver, unsigned idx) {
   value res = 0;
 
   if (!solver->stable) {
-    // switch ((solver->statistics.switched >> 1) & 7) {
-    // case 1:
-    //   res = INITIAL_PHASE;
-    //   break;
-    // case 3:
-    //   res = -INITIAL_PHASE;
-    //   break;
-    // }
-    res = BOOL_TO_VALUE (solver->analyzed_pol[idx]);
+    res = *(solver->phases.analyzed + idx);
   }
 
   if (!res && target && (res = *target)) {

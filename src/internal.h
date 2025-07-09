@@ -153,7 +153,6 @@ struct kissat {
   dataranks ranks;
 
   unsigneds analyzed;
-  unsigned *analyzed_pol;
   unsigneds levels;
   unsigneds minimize;
   unsigneds poisoned;

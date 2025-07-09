@@ -531,6 +531,12 @@ int kissat_analyze (kissat *solver, clause *conflict) {
   }
 
   START (analyze);
+
+  value *a = solver->phases.analyzed;
+  const value *const end = a + VARS;
+  while (a != end)
+    *a++ = 0;
+
   if (!solver->probing) {
     update_trail_average (solver);
     update_decision_rate_average (solver);

@@ -247,7 +247,7 @@ static inline void kissat_push_analyzed (kissat *solver, assigned *assigned,
   assert (!a->analyzed);
   a->analyzed = true;
   PUSH_STACK (solver->analyzed, idx);
-  solver->analyzed_pol[idx] = pol;
+  solver->phases.analyzed[idx] = BOOL_TO_VALUE (pol);
   LOG2 ("%s analyzed", LOGVAR (idx));
 }
 
