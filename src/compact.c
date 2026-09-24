@@ -230,14 +230,11 @@ static void compact_policy (kissat *solver, unsigned vars) {
     }
     assert (midx <= idx);
     score[midx] = score[idx];
-    const double key = kissat_tree_key (tree, idx);
-    const double weight =
-        tree->weighted ? kissat_tree_weight (tree, idx) : 0;
-    kissat_tree_put (tree, midx, key, weight);
+    kissat_tree_move (tree, idx, midx);
   }
   for (unsigned idx = vars; idx < VARS; idx++) {
     score[idx] = 0;
-    kissat_tree_put (tree, idx, TREE_ABSENT, 0);
+    kissat_tree_put (tree, idx, TREE_ABSENT, -INFINITY);
   }
   kissat_rebuild_tree (tree);
 }

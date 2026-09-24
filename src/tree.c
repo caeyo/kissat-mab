@@ -29,7 +29,8 @@ void kissat_resize_tree (struct kissat *solver, tree *tree, unsigned size) {
   for (unsigned idx = kept; idx < old_leaves; idx++)
     assert (tree->keys[idx] == TREE_ABSENT);
 #endif
-  double *keys = 0, *weights = 0, *sums = 0;
+  double *keys = 0;
+  tree_weight *weights = 0, *sums = 0;
   unsigned *args = 0;
   if (new_leaves) {
     keys = kissat_nalloc (solver, new_leaves, sizeof *keys);
@@ -39,10 +40,12 @@ void kissat_resize_tree (struct kissat *solver, tree *tree, unsigned size) {
     for (unsigned idx = kept; idx < new_leaves; idx++)
       keys[idx] = TREE_ABSENT;
     if (tree->weighted) {
-      weights = kissat_calloc (solver, new_leaves, sizeof *weights);
+      weights = kissat_nalloc (solver, new_leaves, sizeof *weights);
       sums = kissat_nalloc (solver, new_leaves, sizeof *sums);
       for (unsigned idx = 0; idx < kept; idx++)
         weights[idx] = tree->weights[idx];
+      for (unsigned idx = kept; idx < new_leaves; idx++)
+        weights[idx] = kissat_tree_zero_weight ();
     }
   }
   kissat_release_tree (solver, tree);
@@ -74,10 +77,8 @@ unsigned kissat_tree_inconsistent_node (const tree *tree) {
       return i;
     if (!tree->weighted)
       continue;
-    const unsigned left = 2 * i;
-    const double *const s =
-        left < leaves ? tree->sums + left : tree->weights + (left - leaves);
-    if (!kissat_same_double (tree->sums[i], s[0] + s[1]))
+    const tree_weight *const s = kissat_tree_children_weights (tree, i);
+    if (!kissat_tree_same_weight (tree->sums[i], kissat_tree_add (s[0], s[1])))
       return i;
   }
   return 0;

@@ -24,18 +24,25 @@ static inline unsigned kissat_tree_children_max (const tree *tree,
   return keys[b] > keys[a] ? b : a;
 }
 
-static inline void kissat_tree_update_sum (tree *tree, unsigned i) {
+// The children of internal node 'i' as weights (sums or leaf weights).
+
+static inline const tree_weight *
+kissat_tree_children_weights (const tree *tree, unsigned i) {
   const unsigned leaves = tree->leaves;
   assert (tree->weighted);
   assert (0 < i), assert (i < leaves);
   const unsigned left = 2 * i;
-  const double *const s =
-      left < leaves ? tree->sums + left : tree->weights + (left - leaves);
-  tree->sums[i] = s[0] + s[1];
+  return left < leaves ? tree->sums + left : tree->weights + (left - leaves);
 }
 
-// Sets the leaf of 'idx' to a present leaf with this key and weight (the
-// weight is ignored in an unweighted tree), and recomputes its ancestors.
+static inline void kissat_tree_update_sum (tree *tree, unsigned i) {
+  const tree_weight *const s = kissat_tree_children_weights (tree, i);
+  tree->sums[i] = kissat_tree_add (s[0], s[1]);
+}
+
+// Sets the leaf of 'idx' to a present leaf with this key and the weight
+// 2^log2_weight (ignored in an unweighted tree), and recomputes its
+// ancestors.
 // With a larger key 'idx' climbs while it is or becomes the maximum of an
 // ancestor, and stops at the first ancestor whose maximum stays another
 // variable, which then holds for every ancestor above.  With a smaller key
@@ -43,7 +50,7 @@ static inline void kissat_tree_update_sum (tree *tree, unsigned i) {
 // whose maximum was another variable keeps it, as do those above.
 
 static inline void kissat_tree_set (tree *tree, unsigned idx, double key,
-                                    double weight) {
+                                    double log2_weight) {
   const unsigned leaves = tree->leaves;
   assert (idx < leaves);
   double *const keys = tree->keys;
@@ -63,53 +70,58 @@ static inline void kissat_tree_set (tree *tree, unsigned idx, double key,
       args[i] = kissat_tree_children_max (tree, i);
   }
   if (tree->weighted) {
-    tree->weights[idx] = weight;
+    tree->weights[idx] = key == TREE_ABSENT
+                             ? kissat_tree_zero_weight ()
+                             : kissat_tree_weight_of_log2 (log2_weight);
     for (unsigned i = first; i; i /= 2)
       kissat_tree_update_sum (tree, i);
   } else
-    (void) weight;
+    (void) log2_weight;
 }
 
 // Makes the leaf of 'idx' absent.
 
 static inline void kissat_tree_remove (tree *tree, unsigned idx) {
   assert (kissat_tree_contains (tree, idx));
-  kissat_tree_set (tree, idx, TREE_ABSENT, 0);
+  kissat_tree_set (tree, idx, TREE_ABSENT, -INFINITY);
 }
 
-// The leaf reached by descending from the root with 'u' in [0, total),
-// i.e. the variable 'idx' with 'W(idx) <= u < W(idx) + weight (idx)',
-// where 'W(idx)' is the total weight of the leaves before it.  Rounding in
-// the sums can make 'u' overshoot a subtree; the descent never enters a
-// subtree of weight zero, so the result always has a positive weight.
+// The leaf reached by descending from the root with 'u' in [0, m), where
+// the total weight is 'm * 2^e' and 'u' is in units of 2^e: the variable
+// 'idx' with 'W(idx) <= u < W(idx) + weight (idx)', where 'W(idx)' is the
+// total weight of the leaves before it.  At every node 'u' is rescaled to
+// the units of the child it enters, which is exact (a power of two).
+// Rounding in the sums can make 'u' overshoot a subtree; the descent never
+// enters a subtree of weight zero, or one left out of its parent's sum as
+// negligible, so the result always has a positive weight.
 
 static inline unsigned kissat_tree_sample (const tree *tree, double u) {
   assert (tree->weighted);
   const unsigned leaves = tree->leaves;
   assert (leaves >= 2);
-  const double *const sums = tree->sums;
-  assert (sums[1] > 0);
+  assert (tree->sums[1].mantissa > 0);
   assert (0 <= u);
-  const unsigned half = leaves / 2;
+  int exponent = tree->sums[1].exponent;
   unsigned i = 1;
-  while (i < half) {
-    const unsigned left = 2 * i;
-    const double s = sums[left];
-    if (u < s)
-      i = left;
-    else if (sums[left + 1] > 0)
-      u -= s, i = left + 1;
+  while (i < leaves) {
+    const tree_weight *const s = kissat_tree_children_weights (tree, i);
+    const double left = kissat_tree_scaled (s[0], exponent);
+    const double right = kissat_tree_scaled (s[1], exponent);
+    unsigned child;
+    if (u < left)
+      child = 0;
+    else if (right > 0)
+      u -= left, child = 1;
     else
-      i = left;
+      child = 0;
+    assert (s[child].mantissa > 0);
+    const int d = exponent - s[child].exponent;
+    assert (0 <= d), assert (d <= TREE_NEGLIGIBLE);
+    u *= kissat_tree_pow2 (d);
+    exponent = s[child].exponent;
+    i = 2 * i + child;
   }
-  const unsigned idx = 2 * i - leaves;
-  const double *const w = tree->weights + idx;
-  if (u < w[0])
-    return idx;
-  if (w[1] > 0)
-    return idx + 1;
-  assert (w[0] > 0);
-  return idx;
+  return i - leaves;
 }
 
 // A leaf drawn with probability proportional to its weight, with one
@@ -117,7 +129,8 @@ static inline unsigned kissat_tree_sample (const tree *tree, double u) {
 
 static inline unsigned kissat_tree_draw (const tree *tree,
                                          generator *random) {
-  const double u = kissat_pick_double53 (random) * kissat_tree_total (tree);
+  const double u =
+      kissat_pick_double53 (random) * kissat_tree_total (tree).mantissa;
   return kissat_tree_sample (tree, u);
 }
 

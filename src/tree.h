@@ -11,6 +11,18 @@
 // ties going to the smaller variable index (the key itself is read from
 // the leaf), and in a weighted tree the sum of the weights in its subtree.
 //
+// Weights and sums carry their own binary exponent ('tree_weight'): a
+// weight is given by its base-2 logarithm, and every weight and sum is
+// 'mantissa * 2^exponent' with an integer exponent that the double's
+// exponent range does not bound.  So any weight that is positive is
+// represented, however far it lies from the others, and no reference
+// point is needed to keep weights in range: nothing underflows to zero or
+// overflows.  A leaf's mantissa is in [1, 2).  A sum takes the larger of
+// its two children's exponents and adds the other child scaled to it; a
+// child more than 'TREE_NEGLIGIBLE' binary orders below is dropped, which
+// rounding would do anyway.  So a sum's mantissa is at least 1 and below
+// twice the number of its leaves, and never needs normalising.
+//
 // Internal nodes are recomputed from their children whenever a leaf
 // changes, never updated by differences.  The tree is therefore a function
 // of its leaves alone: the order of updates leaves no trace, and rounding
@@ -39,18 +51,40 @@
 #include <string.h>
 
 typedef struct tree tree;
+typedef struct tree_weight tree_weight;
+
+// The value 'mantissa * 2^exponent'.  Zero has mantissa zero and exponent
+// 'TREE_ZERO_EXPONENT', below every exponent of a positive weight.
+
+struct tree_weight {
+  double mantissa;
+  int exponent;
+};
 
 struct tree {
-  bool weighted;   // keep weights and sums (fixed before first resize)
-  unsigned leaves; // number of leaves, a power of two, or zero
-  unsigned *args;  // variable of largest key of internal nodes 1 ...
-                   // leaves-1 (node 0 unused)
-  double *keys;    // key of each leaf, minus infinity if absent
-  double *sums;    // weighted: sums of internal nodes 1 ... leaves-1
-  double *weights; // weighted: weight of each leaf
+  bool weighted;        // keep weights and sums (fixed before first resize)
+  unsigned leaves;      // number of leaves, a power of two, or zero
+  unsigned *args;       // variable of largest key of internal nodes 1 ...
+                        // leaves-1 (node 0 unused)
+  double *keys;         // key of each leaf, minus infinity if absent
+  tree_weight *sums;    // weighted: sums of internal nodes 1 ... leaves-1
+  tree_weight *weights; // weighted: weight of each leaf
 };
 
 #define TREE_ABSENT (-INFINITY)
+
+// Exponents of positive weights stay within 'TREE_MAX_EXPONENT' of zero,
+// so that differences of exponents, the zero one included, fit an 'int'.
+
+#define TREE_MAX_EXPONENT (1 << 28)
+#define TREE_ZERO_EXPONENT (-(1 << 29))
+
+// A child whose exponent is more than this below its sibling's is left
+// out of their sum.  Its value is then below 2^(33 - TREE_NEGLIGIBLE)
+// times the sum's (at most 2^32 leaves), less than half a unit in the last
+// place, so rounding would drop it too.
+
+#define TREE_NEGLIGIBLE 128
 
 struct kissat;
 
@@ -82,15 +116,104 @@ static inline bool kissat_same_double (double a, double b) {
   return x == y;
 }
 
+static inline tree_weight kissat_tree_zero_weight (void) {
+  tree_weight res = {0, TREE_ZERO_EXPONENT};
+  return res;
+}
+
+// The weight 2^log2_weight, zero for minus infinity.
+
+static inline tree_weight kissat_tree_weight_of_log2 (double log2_weight) {
+  if (log2_weight == -INFINITY)
+    return kissat_tree_zero_weight ();
+  assert (fabs (log2_weight) < TREE_MAX_EXPONENT);
+  const double floor_log2 = floor (log2_weight);
+  tree_weight res = {exp2 (log2_weight - floor_log2), (int) floor_log2};
+  if (res.mantissa >= 2) // rounding just below the next power of two
+    res.mantissa = 1, res.exponent++;
+  assert (1 <= res.mantissa), assert (res.mantissa < 2);
+  return res;
+}
+
+// The base-2 logarithm of a weight, minus infinity for zero.
+
+static inline double kissat_tree_log2_of_weight (tree_weight weight) {
+  if (!(weight.mantissa > 0))
+    return -INFINITY;
+  return log2 (weight.mantissa) + weight.exponent;
+}
+
+static inline bool kissat_tree_same_weight (tree_weight a, tree_weight b) {
+  return a.exponent == b.exponent &&
+         kissat_same_double (a.mantissa, b.mantissa);
+}
+
+// 2^d for 'd' between the smallest and the largest normal exponent.
+
+static inline double kissat_tree_pow2 (int d) {
+  assert (-1022 <= d), assert (d <= 1023);
+  const uint64_t bits = (uint64_t) (d + 1023) << 52;
+  double res;
+  memcpy (&res, &bits, sizeof res);
+  return res;
+}
+
+// The value of 'weight' in units of 2^exponent, where 'exponent' is at
+// least the weight's; zero if the weight is negligible at that exponent.
+
+static inline double kissat_tree_scaled (tree_weight weight, int exponent) {
+  assert (weight.exponent <= exponent);
+  const int d = weight.exponent - exponent;
+  if (d < -TREE_NEGLIGIBLE)
+    return 0;
+  return weight.mantissa * kissat_tree_pow2 (d);
+}
+
+// The sum of two weights, as the tree computes it: the larger exponent,
+// and the other mantissa scaled to it, or dropped if it is negligible.  It
+// does not depend on the order of the arguments.  Branch-free, because
+// which child has the larger exponent is not predictable.  A scaling
+// exponent of -1023 has bit pattern zero, i.e. it scales to 0.
+
+static inline tree_weight kissat_tree_add (tree_weight a, tree_weight b) {
+  const bool swap = a.exponent < b.exponent;
+  const int exponent = swap ? b.exponent : a.exponent;
+  const int other = swap ? a.exponent : b.exponent;
+  const double large = swap ? b.mantissa : a.mantissa;
+  const double small = swap ? a.mantissa : b.mantissa;
+  int d = other - exponent;
+  d = d < -TREE_NEGLIGIBLE ? -1023 : d;
+  const uint64_t bits = (uint64_t) (d + 1023) << 52;
+  double factor;
+  memcpy (&factor, &bits, sizeof factor);
+  tree_weight res = {large + small * factor, exponent};
+  return res;
+}
+
 // Sets a leaf without recomputing its ancestors, for bulk changes that
 // end with 'kissat_rebuild_tree'.  A key of 'TREE_ABSENT' makes it absent.
+// The weight is given by its base-2 logarithm and ignored in an
+// unweighted tree.
 
 static inline void kissat_tree_put (tree *tree, unsigned idx, double key,
-                                    double weight) {
+                                    double log2_weight) {
   assert (idx < tree->leaves);
   tree->keys[idx] = key;
   if (tree->weighted)
-    tree->weights[idx] = key == TREE_ABSENT ? 0 : weight;
+    tree->weights[idx] = key == TREE_ABSENT
+                             ? kissat_tree_zero_weight ()
+                             : kissat_tree_weight_of_log2 (log2_weight);
+}
+
+// Moves the key and weight of leaf 'from' to leaf 'to', without
+// recomputing ancestors (for compaction, which rebuilds afterwards).
+
+static inline void kissat_tree_move (tree *tree, unsigned from,
+                                     unsigned to) {
+  assert (from < tree->leaves), assert (to < tree->leaves);
+  tree->keys[to] = tree->keys[from];
+  if (tree->weighted)
+    tree->weights[to] = tree->weights[from];
 }
 
 static inline bool kissat_tree_contains (const tree *tree, unsigned idx) {
@@ -103,7 +226,8 @@ static inline double kissat_tree_key (const tree *tree, unsigned idx) {
   return tree->keys[idx];
 }
 
-static inline double kissat_tree_weight (const tree *tree, unsigned idx) {
+static inline tree_weight kissat_tree_weight (const tree *tree,
+                                              unsigned idx) {
   assert (tree->weighted);
   assert (idx < tree->leaves);
   return tree->weights[idx];
@@ -125,11 +249,16 @@ static inline unsigned kissat_tree_max (const tree *tree) {
   return tree->keys[res] == TREE_ABSENT ? UINT_MAX : res;
 }
 
-// Sum of the weights of all leaves.
+// Sum of the weights of all leaves.  It is zero exactly when every leaf
+// has weight zero.
 
-static inline double kissat_tree_total (const tree *tree) {
+static inline tree_weight kissat_tree_total (const tree *tree) {
   assert (tree->weighted);
-  return tree->leaves ? tree->sums[1] : 0;
+  return tree->leaves ? tree->sums[1] : kissat_tree_zero_weight ();
+}
+
+static inline bool kissat_tree_has_weight (const tree *tree) {
+  return kissat_tree_total (tree).mantissa > 0;
 }
 
 #endif
