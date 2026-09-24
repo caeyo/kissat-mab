@@ -1,4 +1,5 @@
 #include "../src/bump.h"
+#include "../src/inlinepolicy.h"
 
 #include "test.h"
 
@@ -21,7 +22,6 @@ static void test_bump_rescale (void) {
   assert (solver->scinc > 0);
   tissat_verbose ("initial score increment %g", solver->scinc);
   ACTIVE (0) = ACTIVE (1) = true;
-  heap *scores = SCORES;
   unsigned count = 0;
   for (unsigned i = 1; i <= 5; i++) {
     double prev = 0;
@@ -36,11 +36,11 @@ static void test_bump_rescale (void) {
       kissat_bump_analyzed (solver);
       CLEAR_STACK (solver->analyzed);
       if (prev >= solver->scinc || solver->scinc >= MAX_SCORE * 0.7 ||
-          kissat_get_heap_score (scores, 0) >= MAX_SCORE * 0.7 ||
-          kissat_get_heap_score (scores, 1) >= MAX_SCORE * 0.7)
+          kissat_get_score (solver, 0) >= MAX_SCORE * 0.7 ||
+          kissat_get_score (solver, 1) >= MAX_SCORE * 0.7)
         tissat_verbose ("%u.%u: score[0]=%g score[1]=%g scinc=%g", i, count,
-                        kissat_get_heap_score (scores, 0),
-                        kissat_get_heap_score (scores, 1), solver->scinc);
+                        kissat_get_score (solver, 0),
+                        kissat_get_score (solver, 1), solver->scinc);
     }
   }
   kissat_release (solver);

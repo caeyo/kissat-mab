@@ -3,6 +3,7 @@
 #include "analyze.h"
 #include "heap.h"
 #include "inline.h"
+#include "inlinepolicy.h"
 #include "inlinevector.h"
 #include "logging.h"
 #include "print.h"
@@ -219,11 +220,7 @@ static bool transitive_reduce (kissat *solver, unsigned src, uint64_t limit,
 
 static inline bool less_stable_transitive (kissat *solver,
                                            const flags *const flags,
-                                           const heap *scores, unsigned a,
-                                           unsigned b) {
-#ifdef NDEBUG
-  (void) solver;
-#endif
+                                           unsigned a, unsigned b) {
   const unsigned i = IDX (a);
   const unsigned j = IDX (b);
   const bool p = flags[i].transitive;
@@ -232,8 +229,8 @@ static inline bool less_stable_transitive (kissat *solver,
     return true;
   if (p && !q)
     return false;
-  const double s = kissat_get_heap_score (scores, i);
-  const double t = kissat_get_heap_score (scores, j);
+  const double s = kissat_get_score (solver, i);
+  const double t = kissat_get_score (solver, j);
   if (s < t)
     return true;
   if (s > t)
@@ -262,14 +259,13 @@ static inline unsigned less_focused_transitive (kissat *solver,
 }
 
 #define LESS_STABLE_PROBE(A, B) \
-  less_stable_transitive (solver, flags, scores, (A), (B))
+  less_stable_transitive (solver, flags, (A), (B))
 
 #define LESS_FOCUSED_PROBE(A, B) \
   less_focused_transitive (solver, flags, links, (A), (B))
 
 static void sort_stable_transitive (kissat *solver, unsigneds *probes) {
   const flags *const flags = solver->flags;
-  const heap *const scores = SCORES;
   SORT_STACK (unsigned, *probes, LESS_STABLE_PROBE);
 }
 

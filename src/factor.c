@@ -6,6 +6,7 @@
 #include "import.h"
 #include "inline.h"
 #include "inlineheap.h"
+#include "inlinepolicy.h"
 #include "inlinequeue.h"
 #include "inlinevector.h"
 #include "internal.h"
@@ -852,7 +853,7 @@ adjust_scores_and_phases_of_fresh_variables (factoring *factoring) {
       LOG ("unbumping fresh[%zu] %s", (size_t) (p - begin - 1),
            LOGVAR (idx));
       const double score = 0;
-      kissat_update_heap (solver, &solver->scores, idx, score);
+      kissat_update_score (solver, idx, score);
     }
   }
   {

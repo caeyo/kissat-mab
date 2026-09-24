@@ -2,7 +2,7 @@
 #include "backtrack.h"
 #include "bump.h"
 #include "inline.h"
-#include "inlineheap.h"
+#include "inlinepolicy.h"
 #include "inlinequeue.h"
 #include "inlinevector.h"
 #include "internal.h"
@@ -111,15 +111,15 @@ static bool less_focused_order (unsigned a, unsigned b, links *links,
   return s < t;
 }
 
-static bool less_stable_order (unsigned a, unsigned b, heap *scores,
+static bool less_stable_order (kissat *solver, unsigned a, unsigned b,
                                double *weights) {
   double u = weights[a], v = weights[b];
   if (u < v)
     return true;
   if (u > v)
     return false;
-  double s = kissat_get_heap_score (scores, a);
-  double t = kissat_get_heap_score (scores, b);
+  double s = kissat_get_score (solver, a);
+  double t = kissat_get_score (solver, b);
   if (s < t)
     return true;
   if (s > t)
@@ -129,7 +129,7 @@ static bool less_stable_order (unsigned a, unsigned b, heap *scores,
 
 #define LESS_FOCUSED_ORDER(A, B) less_focused_order (A, B, links, weights)
 
-#define LESS_STABLE_ORDER(A, B) less_stable_order (A, B, scores, weights)
+#define LESS_STABLE_ORDER(A, B) less_stable_order (solver, A, B, weights)
 
 static void sort_active_variables_by_weight (kissat *solver,
                                              unsigneds *sorted,
@@ -139,13 +139,12 @@ static void sort_active_variables_by_weight (kissat *solver,
     if (ACTIVE (idx))
       PUSH_STACK (*sorted, idx);
   if (solver->stable) {
-    heap *scores = SCORES;
     SORT_STACK (unsigned, *sorted, LESS_STABLE_ORDER);
 #ifdef LOGGING
     for (all_stack (unsigned, idx, *sorted))
       if (ACTIVE (idx))
         LOG ("reordered %s with weight %g score %g", LOGVAR (idx),
-             weights[idx], kissat_get_heap_score (scores, idx));
+             weights[idx], kissat_get_score (solver, idx));
 #endif
   } else {
     struct links *links = solver->links;
@@ -180,16 +179,15 @@ static void reorder_stable (kissat *solver) {
   kissat_rescale_scores (solver);
   unsigneds sorted;
   sort_active_variables_by_weight (solver, &sorted, weights);
-  heap *scores = SCORES;
   while (!EMPTY_STACK (sorted)) {
     unsigned idx = POP_STACK (sorted);
     assert (ACTIVE (idx));
-    const double old_score = kissat_get_heap_score (scores, idx);
+    const double old_score = kissat_get_score (solver, idx);
     const double weight = weights[idx];
     const double new_score = old_score + weight;
     LOG ("updating score of %s to %g = %g (old score) + %g (weight)",
          LOGVAR (idx), new_score, old_score, weight);
-    kissat_update_heap (solver, scores, idx, new_score);
+    kissat_update_score (solver, idx, new_score);
   }
   kissat_dealloc (solver, weights, LITS, sizeof *weights);
   RELEASE_STACK (sorted);

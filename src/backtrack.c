@@ -1,7 +1,7 @@
 #include "backtrack.h"
 #include "analyze.h"
 #include "inline.h"
-#include "inlineheap.h"
+#include "inlinepolicy.h"
 #include "inlinequeue.h"
 #include "print.h"
 #include "proprobe.h"
@@ -26,13 +26,11 @@ static inline void add_unassigned_variable_back_to_queue (kissat *solver,
     kissat_update_queue (solver, links, idx);
 }
 
-static inline void add_unassigned_variable_back_to_heap (kissat *solver,
-                                                         heap *scores,
-                                                         unsigned lit) {
+static inline void add_unassigned_variable_back_to_policy (kissat *solver,
+                                                           unsigned lit) {
   assert (solver->stable);
   const unsigned idx = IDX (lit);
-  if (!kissat_heap_contains (scores, idx))
-    kissat_push_heap (solver, scores, idx);
+  kissat_policy_unassign (solver, idx);
 }
 
 static void kissat_update_target_and_best_phases (kissat *solver) {
@@ -90,7 +88,6 @@ void kissat_backtrack_without_updating_phases (kissat *solver,
 
   unsigned *q = new_end;
   if (solver->stable) {
-    heap *scores = SCORES;
     for (const unsigned *p = q; p != old_end; p++) {
       const unsigned lit = *p;
       const unsigned idx = IDX (lit);
@@ -106,7 +103,7 @@ void kissat_backtrack_without_updating_phases (kissat *solver,
         reassigned++;
       } else {
         unassign (solver, values, lit);
-        add_unassigned_variable_back_to_heap (solver, scores, lit);
+        add_unassigned_variable_back_to_policy (solver, lit);
         unassigned++;
       }
     }

@@ -2,6 +2,7 @@
 #include "backtrack.h"
 #include "bump.h"
 #include "decide.h"
+#include "inlinepolicy.h"
 #include "internal.h"
 #include "kimits.h"
 #include "logging.h"
@@ -51,14 +52,13 @@ void kissat_update_focused_restart_limit (kissat *solver) {
 }
 
 static unsigned reuse_stable_trail (kissat *solver) {
-  const heap *const scores = SCORES;
   const unsigned next_idx = kissat_next_decision_variable (solver);
-  const double limit = kissat_get_heap_score (scores, next_idx);
+  const double limit = kissat_get_score (solver, next_idx);
   unsigned level = solver->level, res = 0;
   while (res < level) {
     frame *f = &FRAME (res + 1);
     const unsigned idx = IDX (f->decision);
-    const double score = kissat_get_heap_score (scores, idx);
+    const double score = kissat_get_score (solver, idx);
     if (score <= limit)
       break;
     res++;

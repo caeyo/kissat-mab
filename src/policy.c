@@ -1,5 +1,5 @@
 #include "policy.h"
-#include "inlineheap.h"
+#include "inlinepolicy.h"
 #include "logging.h"
 
 static unsigned heap_argmax_pick (kissat *solver) {
@@ -31,4 +31,12 @@ unsigned kissat_policy_pick (kissat *solver) {
   assert (solver->stable);
   assert (solver->unassigned);
   return heap_argmax_pick (solver);
+}
+
+void kissat_update_scores (kissat *solver) {
+  assert (solver->stable);
+  heap *scores = SCORES;
+  for (all_variables (idx))
+    if (ACTIVE (idx) && !kissat_heap_contains (scores, idx))
+      kissat_push_heap (solver, scores, idx);
 }

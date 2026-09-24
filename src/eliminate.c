@@ -6,6 +6,7 @@
 #include "forward.h"
 #include "inline.h"
 #include "inlineheap.h"
+#include "inlinepolicy.h"
 #include "kitten.h"
 #include "print.h"
 #include "propdense.h"
@@ -56,7 +57,7 @@ static inline double variable_score (kissat *solver, unsigned idx) {
   assert (score <= occlim2);
   double relevancy;
   if (solver->stable)
-    relevancy = kissat_get_heap_score (&solver->scores, idx);
+    relevancy = kissat_get_score (solver, idx);
   else
     relevancy = LINK (idx).stamp;
   double res = relevancy + score - occlim2;

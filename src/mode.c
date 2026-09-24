@@ -1,6 +1,6 @@
-#include "bump.h"
 #include "decide.h"
 #include "inline.h"
+#include "policy.h"
 #include "print.h"
 #include "report.h"
 #include "resources.h"

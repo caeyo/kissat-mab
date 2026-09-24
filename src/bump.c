@@ -1,6 +1,6 @@
 #include "bump.h"
 #include "analyze.h"
-#include "inlineheap.h"
+#include "inlinepolicy.h"
 #include "inlinequeue.h"
 #include "inlinevector.h"
 #include "internal.h"
@@ -27,14 +27,13 @@ static void sort_bump (kissat *solver) {
 
 void kissat_rescale_scores (kissat *solver) {
   INC (rescaled);
-  heap *scores = &solver->scores;
-  const double max_score = kissat_max_score_on_heap (scores);
+  const double max_score = kissat_max_score (solver);
   kissat_phase (solver, "rescale", GET (rescaled),
                 "maximum score %g increment %g", max_score, solver->scinc);
   const double rescale = MAX (max_score, solver->scinc);
   assert (rescale > 0);
   const double factor = 1.0 / rescale;
-  kissat_rescale_heap (solver, scores, factor);
+  kissat_scale_scores (solver, factor);
   solver->scinc *= factor;
   kissat_phase (solver, "rescale", GET (rescaled), "rescaled by factor %g",
                 factor);
@@ -54,12 +53,11 @@ void kissat_bump_score_increment (kissat *solver) {
 
 static inline void bump_analyzed_variable_score (kissat *solver,
                                                  unsigned idx) {
-  heap *scores = &solver->scores;
-  const double old_score = kissat_get_heap_score (scores, idx);
+  const double old_score = kissat_get_score (solver, idx);
   const double inc = solver->scinc;
   const double new_score = old_score + inc;
   LOG ("new score[%u] = %g = %g + %g", idx, new_score, old_score, inc);
-  kissat_update_heap (solver, scores, idx, new_score);
+  kissat_update_score (solver, idx, new_score);
   if (new_score > MAX_SCORE)
     kissat_rescale_scores (solver);
 }
@@ -109,12 +107,4 @@ void kissat_bump_analyzed (kissat *solver) {
     bump_analyzed_variable_scores (solver);
   ADD (literals_bumped, bumped);
   STOP (bump);
-}
-
-void kissat_update_scores (kissat *solver) {
-  assert (solver->stable);
-  heap *scores = SCORES;
-  for (all_variables (idx))
-    if (ACTIVE (idx) && !kissat_heap_contains (scores, idx))
-      kissat_push_heap (solver, scores, idx);
 }
