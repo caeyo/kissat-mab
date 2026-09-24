@@ -13,6 +13,7 @@ coverage=no
 debug=no
 dechash=no
 default=no
+heapargmax=no
 embedded=unknown
 extreme=no
 kitten=unknown
@@ -29,6 +30,7 @@ proofs=yes
 quiet=no
 safe=no
 sat=no
+shadow=no
 shared=no
 static=no
 statistics=unknown
@@ -153,7 +155,7 @@ mode and for testing purposes can be compiled into a 'kitten' binary.
 Enable (very) expensive low-level checkers for data structures:
 
    --check-all      check consistency of all data structures
-   --check-heap     check consistency of binary heaps
+   --check-heap     check consistency of binary heaps (and every tree pick)
    --check-kitten   check consistencies in 'Kitten' sub-solver
    --check-queue    check consistency of the variable-move-to-front queue
    --check-vectors  check consistency of watch vectors
@@ -165,6 +167,16 @@ Print a hash of the decision trail at the end of every run (see
 'src/dechash.h'), used by the heap-path regression test:
 
    --dechash        hash every decision (off by default)
+
+By default the stable-mode decision policy keeps its variables in a sum
+tree with maximum and the score heap is not compiled in (see
+'src/policy.h').  Two other builds keep the heap:
+
+   --heap-argmax    Kissat's own score heap and nothing else (HeapArgmax),
+                    for the heap-path regression test
+   --shadow         the tree plus the heap alongside it, every tree pick
+                    checked against the heap (implies '-c')
+
 We also allow an explicit choice of the C compiler.
 
   CC=<compiler>     default is 'gcc' (and we regularly test with 'CC=clang')
@@ -295,6 +307,8 @@ do
     --check-all) check_all=yes;;
     --check-heap) check_heap=yes;;
     --dechash) dechash=yes;;
+    --heap-argmax) heapargmax=yes;;
+    --shadow) shadow=yes;;
     --check-kitten) check_kitten=yes;;
     --check-queue) check_queue=yes;;
     --check-vectors) check_vectors=yes;;
@@ -477,7 +491,11 @@ then
   check_vectors=yes
   check_walk=yes
 fi
+[ $heapargmax = yes -a $shadow = yes ] && \
+  die "can not combine '--heap-argmax' and '--shadow'"
+
 [ $check_heap = yes ] && check=yes
+[ $shadow = yes ] && check=yes
 [ $check_kitten = yes ] && check=yes
 [ $check_queue = yes ] && check=yes
 [ $check_vectors = yes ] && check=yes
@@ -600,6 +618,8 @@ esac
 [ $lto = yes ] && CFLAGS="$CFLAGS -DLTO"
 [ $check_heap = yes ] && CFLAGS="$CFLAGS -DCHECK_HEAP"
 [ $dechash = yes ] && CFLAGS="$CFLAGS -DDECHASH"
+[ $heapargmax = yes ] && CFLAGS="$CFLAGS -DHEAPARGMAX"
+[ $shadow = yes ] && CFLAGS="$CFLAGS -DSHADOW"
 [ $check_kitten = yes ] && CFLAGS="$CFLAGS -DCHECK_KITTEN"
 [ $check_queue = yes ] && CFLAGS="$CFLAGS -DCHECK_QUEUE"
 [ $check_vectors = yes ] && CFLAGS="$CFLAGS -DCHECK_VECTORS"

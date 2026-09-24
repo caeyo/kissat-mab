@@ -66,7 +66,13 @@ void kissat_increase_size (kissat *solver, unsigned new_size) {
   CREALLOC_LITERAL_INDEXED (watches, watches);
 
   reallocate_trail (solver, old_size, new_size);
+#if defined(HEAPARGMAX) || defined(SHADOW)
   kissat_resize_heap (solver, SCORES, new_size);
+#endif
+#ifndef HEAPARGMAX
+  CREALLOC_VARIABLE_INDEXED (double, score);
+  kissat_resize_tree (solver, &solver->policy.tree, new_size);
+#endif
   kissat_increase_phases (solver, new_size);
 
   solver->size = new_size;
@@ -95,7 +101,13 @@ void kissat_decrease_size (kissat *solver) {
   NREALLOC_LITERAL_INDEXED (watches, watches);
 
   reallocate_trail (solver, old_size, new_size);
+#if defined(HEAPARGMAX) || defined(SHADOW)
   kissat_resize_heap (solver, SCORES, new_size);
+#endif
+#ifndef HEAPARGMAX
+  NREALLOC_VARIABLE_INDEXED (double, score);
+  kissat_resize_tree (solver, &solver->policy.tree, new_size);
+#endif
   kissat_decrease_phases (solver, new_size);
 
   solver->size = new_size;

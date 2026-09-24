@@ -18,9 +18,23 @@
 // Assignment needs no hook: assigned variables are dropped lazily, when
 // the policy meets them.
 //
-// 'HeapArgmax' is the only policy in this build.  The scores are stored in
-// its binary heap 'SCORES', and each function below performs the heap
-// operation Kissat itself performs at that point.
+// A bulk score change ('reorder') is bracketed by
+// 'kissat_begin_bulk_score_change' and 'kissat_end_bulk_score_change'.  In
+// between, score writes, rescaling included, go to the estimator only, and
+// the end rebuilds the policy structure once, in linear time.
+//
+// HeapArgmax builds: the scores are stored in the binary heap 'SCORES',
+// and each function below performs the heap operation Kissat itself
+// performs at that point.  Bulk changes go through the heap one write at a
+// time, as in Kissat.
+//
+// Tree builds: the scores are stored in the estimator's array 'score',
+// and the policy structure is the tree of 'policy.h', whose leaves hold a
+// copy of the score of every available variable.  A rescale rebuilds the
+// tree, since multiplying every score by the same factor can create ties.
+// Shadow builds apply every change to the heap 'SCORES' too.
+
+#ifdef HEAPARGMAX
 
 #include "inlineheap.h"
 
@@ -66,5 +80,131 @@ static inline void kissat_policy_deactivate (kissat *solver, unsigned idx) {
   if (kissat_heap_contains (scores, idx))
     kissat_pop_heap (solver, scores, idx);
 }
+
+static inline void kissat_begin_bulk_score_change (kissat *solver) {
+  (void) solver;
+}
+
+static inline void kissat_end_bulk_score_change (kissat *solver) {
+  (void) solver;
+}
+
+#else
+
+#include "inlinetree.h"
+#include "internal.h"
+#include "logging.h"
+
+#ifdef SHADOW
+#include "inlineheap.h"
+#endif
+
+static inline double kissat_get_score (kissat *solver, unsigned idx) {
+  assert (idx < VARS);
+  return solver->score[idx];
+}
+
+// The key and, in a weighted tree, the weight of an available variable.
+
+static inline void kissat_policy_set_leaf (kissat *solver, unsigned idx) {
+  kissat_tree_set (&solver->policy.tree, idx, solver->score[idx], 0);
+}
+
+static inline void kissat_update_score (kissat *solver, unsigned idx,
+                                        double score) {
+  assert (idx < VARS);
+  double *const p = solver->score + idx;
+  const double old_score = *p;
+  if (old_score == score)
+    return;
+  LOG ("update score of %s from %g to %g", LOGVAR (idx), old_score,
+       score);
+  *p = score;
+#ifdef SHADOW
+  kissat_update_heap (solver, SCORES, idx, score);
+#endif
+  policy *const policy = &solver->policy;
+  if (policy->bulk)
+    return;
+  if (kissat_tree_contains (&policy->tree, idx))
+    kissat_policy_set_leaf (solver, idx);
+}
+
+// The largest score stored for any variable, active or not, assigned or
+// not (0 if no score was ever changed).  This is the reference of the
+// estimator's rescaling, not the policy's maximum ('kissat_policy_peek').
+// Scores are never negative, so starting from zero gives what the heap's
+// scan gives.
+
+static inline double kissat_max_score (kissat *solver) {
+  const double *const score = solver->score;
+  double res = 0;
+  for (all_variables (idx))
+    res = MAX (res, score[idx]);
+  return res;
+}
+
+static inline void kissat_scale_scores (kissat *solver, double factor) {
+  LOG ("rescaling scores with factor %g", factor);
+  double *const score = solver->score;
+  for (all_variables (idx))
+    score[idx] *= factor;
+#ifdef SHADOW
+  kissat_rescale_heap (solver, SCORES, factor);
+#endif
+  if (!solver->policy.bulk)
+    kissat_rebuild_policy (solver);
+}
+
+// Backtracking in stable mode unassigned 'idx'.
+
+static inline void kissat_policy_unassign (kissat *solver, unsigned idx) {
+  assert (!solver->policy.bulk);
+#ifdef SHADOW
+  heap *scores = SCORES;
+  if (!kissat_heap_contains (scores, idx))
+    kissat_push_heap (solver, scores, idx);
+#endif
+  if (!kissat_tree_contains (&solver->policy.tree, idx))
+    kissat_policy_set_leaf (solver, idx);
+}
+
+// 'idx' was activated in stable mode and is unassigned.
+
+static inline void kissat_policy_activate (kissat *solver, unsigned idx) {
+  assert (!solver->policy.bulk);
+#ifdef SHADOW
+  kissat_push_heap (solver, SCORES, idx);
+#endif
+  assert (!kissat_tree_contains (&solver->policy.tree, idx));
+  kissat_policy_set_leaf (solver, idx);
+}
+
+// 'idx' was fixed or eliminated, in either mode.
+
+static inline void kissat_policy_deactivate (kissat *solver, unsigned idx) {
+  assert (!solver->policy.bulk);
+#ifdef SHADOW
+  heap *scores = SCORES;
+  if (kissat_heap_contains (scores, idx))
+    kissat_pop_heap (solver, scores, idx);
+#endif
+  tree *const tree = &solver->policy.tree;
+  if (kissat_tree_contains (tree, idx))
+    kissat_tree_remove (tree, idx);
+}
+
+static inline void kissat_begin_bulk_score_change (kissat *solver) {
+  assert (!solver->policy.bulk);
+  solver->policy.bulk = true;
+}
+
+static inline void kissat_end_bulk_score_change (kissat *solver) {
+  assert (solver->policy.bulk);
+  solver->policy.bulk = false;
+  kissat_rebuild_policy (solver);
+}
+
+#endif
 
 #endif

@@ -51,6 +51,8 @@ void kissat_update_focused_restart_limit (kissat *solver) {
                             limits->restart.conflicts, delta);
 }
 
+#ifdef HEAPARGMAX
+
 static unsigned reuse_stable_trail (kissat *solver) {
   const unsigned next_idx = kissat_next_decision_variable (solver);
   const double limit = kissat_get_score (solver, next_idx);
@@ -65,6 +67,8 @@ static unsigned reuse_stable_trail (kissat *solver) {
   }
   return res;
 }
+
+#endif
 
 static unsigned reuse_focused_trail (kissat *solver) {
   const links *const links = solver->links;
@@ -92,17 +96,25 @@ static unsigned reuse_trail (kissat *solver) {
 
   // The stable-mode peek predicts the next decision by asking the policy,
   // which only an argmax policy can answer, so the fork disables it in
-  // every arm.  '--restartreusestable=1' restores Kissat's behaviour, for
-  // the heap-path regression test.
+  // every arm.  Tree builds do not compile it in.  In HeapArgmax builds
+  // '--restartreusestable=1' restores Kissat's behaviour, for the
+  // heap-path regression test.
 
+#ifdef HEAPARGMAX
   if (solver->stable && !GET_OPTION (restartreusestable))
     return 0;
+#else
+  if (solver->stable)
+    return 0;
+#endif
 
   unsigned res;
 
+#ifdef HEAPARGMAX
   if (solver->stable)
     res = reuse_stable_trail (solver);
   else
+#endif
     res = reuse_focused_trail (solver);
 
   LOG ("matching trail level %u", res);

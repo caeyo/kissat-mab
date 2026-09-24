@@ -41,4 +41,11 @@ static inline double kissat_pick_double (generator *rng) {
   return kissat_next_random32 (rng) / 4294967296.0;
 }
 
+// A double in [0, 1) from the 53 high bits of the next state, for the
+// draws of the decision policy ('kissat_pick_double' uses 32 bits).
+
+static inline double kissat_pick_double53 (generator *rng) {
+  return (kissat_next_random64 (rng) >> 11) * (1.0 / 9007199254740992.0);
+}
+
 #endif

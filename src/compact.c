@@ -1,6 +1,7 @@
 #include "compact.h"
 #include "inline.h"
 #include "inlineheap.h"
+#include "inlinetree.h"
 #include "print.h"
 #include "resize.h"
 
@@ -173,6 +174,8 @@ static void compact_stack (kissat *solver, unsigneds *stack) {
   SHRINK_STACK (*stack);
 }
 
+#if defined(HEAPARGMAX) || defined(SHADOW)
+
 static void compact_scores (kissat *solver, heap *old_scores,
                             unsigned vars) {
   LOG ("compacting scores");
@@ -204,6 +207,42 @@ static void compact_scores (kissat *solver, heap *old_scores,
   kissat_release_heap (solver, old_scores);
   *old_scores = new_scores;
 }
+
+#endif
+
+#ifndef HEAPARGMAX
+
+// Moves every score and leaf of the policy tree to the variable's new
+// index, as 'compact_scores' does for the heap.  Indices only decrease and
+// the loop goes up, so nothing is overwritten before it is moved.  Leaves
+// of the variables that disappear are absent (they are inactive), and
+// leaves beyond the new number of variables are made absent.
+
+static void compact_policy (kissat *solver, unsigned vars) {
+  LOG ("compacting scores and policy tree");
+  double *const score = solver->score;
+  tree *const tree = &solver->policy.tree;
+  for (all_variables (idx)) {
+    const unsigned midx = map_idx (solver, idx);
+    if (midx == INVALID_IDX) {
+      assert (!kissat_tree_contains (tree, idx));
+      continue;
+    }
+    assert (midx <= idx);
+    score[midx] = score[idx];
+    const double key = kissat_tree_key (tree, idx);
+    const double weight =
+        tree->weighted ? kissat_tree_weight (tree, idx) : 0;
+    kissat_tree_put (tree, midx, key, weight);
+  }
+  for (unsigned idx = vars; idx < VARS; idx++) {
+    score[idx] = 0;
+    kissat_tree_put (tree, idx, TREE_ABSENT, 0);
+  }
+  kissat_rebuild_tree (tree);
+}
+
+#endif
 
 static void compact_trail (kissat *solver) {
   LOG ("compacting trail");
@@ -363,7 +402,12 @@ void kissat_finalize_compacting (kissat *solver, unsigned vars,
 
   compact_queue (solver);
   compact_stack (solver, &solver->sweep_schedule);
+#if defined(HEAPARGMAX) || defined(SHADOW)
   compact_scores (solver, SCORES, vars);
+#endif
+#ifndef HEAPARGMAX
+  compact_policy (solver, vars);
+#endif
   compact_frames (solver);
   compact_export (solver, vars);
   compact_best_and_target_values (solver, vars);

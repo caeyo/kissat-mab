@@ -117,6 +117,14 @@ static void dump_queue (kissat *solver) {
 }
 
 static void dump_scores (kissat *solver) {
+#ifndef HEAPARGMAX
+  const tree *const tree = &solver->policy.tree;
+  printf ("tree.leaves = %u\n", tree->leaves);
+  for (unsigned i = 0; i < solver->vars; i++)
+    printf ("score[%u] = %g%s\n", i, solver->score[i],
+            kissat_tree_contains (tree, i) ? "" : " (not in tree)");
+#endif
+#if defined(HEAPARGMAX) || defined(SHADOW)
   heap *heap = SCORES;
   printf ("scores.vars = %u\n", heap->vars);
   printf ("scores.size = %u\n", heap->size);
@@ -126,6 +134,7 @@ static void dump_scores (kissat *solver) {
     printf ("scores.score[%u] = %g\n", i, heap->score[i]);
   for (unsigned i = 0; i < heap->vars; i++)
     printf ("scores.pos[%u] = %u\n", i, heap->pos[i]);
+#endif
 }
 
 static void dump_export (kissat *solver) {

@@ -21,6 +21,7 @@
 #include "mode.h"
 #include "options.h"
 #include "phases.h"
+#include "policy.h"
 #include "profile.h"
 #include "proof.h"
 #include "queue.h"
@@ -126,7 +127,13 @@ struct kissat {
   links *links;
   queue queue;
 
+#if defined(HEAPARGMAX) || defined(SHADOW)
   heap scores;
+#endif
+#ifndef HEAPARGMAX
+  double *score;
+  policy policy;
+#endif
   double scinc;
 
   heap schedule;
@@ -261,7 +268,9 @@ struct kissat {
 #define TIER2 (solver->tier2[1])
 #endif
 
+#if defined(HEAPARGMAX) || defined(SHADOW)
 #define SCORES (&solver->scores)
+#endif
 
 static inline unsigned kissat_assigned (kissat *solver) {
   assert (VARS >= solver->unassigned);

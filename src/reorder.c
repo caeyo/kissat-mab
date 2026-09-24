@@ -176,6 +176,7 @@ static void reorder_stable (kissat *solver) {
   INC (reordered_stable);
   assert (solver->stable);
   double *weights = compute_weights (solver);
+  kissat_begin_bulk_score_change (solver);
   kissat_rescale_scores (solver);
   unsigneds sorted;
   sort_active_variables_by_weight (solver, &sorted, weights);
@@ -189,6 +190,7 @@ static void reorder_stable (kissat *solver) {
          LOGVAR (idx), new_score, old_score, weight);
     kissat_update_score (solver, idx, new_score);
   }
+  kissat_end_bulk_score_change (solver);
   kissat_dealloc (solver, weights, LITS, sizeof *weights);
   RELEASE_STACK (sorted);
 }

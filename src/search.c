@@ -69,6 +69,7 @@ static void start_search (kissat *solver) {
   unsigned seed = GET_OPTION (seed);
   solver->random = seed;
   LOG ("initialized random number generator with seed %u", seed);
+  kissat_seed_policy (solver);
 
 #ifndef QUIET
   limits *limits = &solver->limits;

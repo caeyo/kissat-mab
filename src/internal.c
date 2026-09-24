@@ -78,7 +78,13 @@ void kissat_set_prefix (kissat *solver, const char *prefix) {
 
 void kissat_release (kissat *solver) {
   kissat_require_initialized (solver);
+#if defined(HEAPARGMAX) || defined(SHADOW)
   kissat_release_heap (solver, SCORES);
+#endif
+#ifndef HEAPARGMAX
+  DEALLOC_VARIABLE_INDEXED (score);
+  kissat_release_tree (solver, &solver->policy.tree);
+#endif
   kissat_release_heap (solver, &solver->schedule);
   kissat_release_vectors (solver);
   kissat_release_phases (solver);
@@ -260,6 +266,10 @@ void kissat_print_statistics (kissat *solver) {
 #ifdef DECHASH
   kissat_section (solver, "decision hash");
   kissat_print_dechash (solver);
+#endif
+#ifdef SHADOW
+  kissat_section (solver, "shadow mode");
+  kissat_print_shadow_statistics (solver);
 #endif
   kissat_section (solver, "resources");
   kissat_print_resources (solver);

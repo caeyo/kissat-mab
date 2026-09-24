@@ -86,6 +86,7 @@
   OPTION (otfs, 1, 0, 1, "on-the-fly strengthening") \
   OPTION (phase, 1, 0, 1, "initial decision phase") \
   OPTION (phasesaving, 1, 0, 1, "enable phase saving") \
+  TREEOPT (policyseed, 0, 0, INT_MAX, "random seed of the decision policy") \
   OPTION (preprocess, 1, 0, 1, "initial preprocessing") \
   OPTION (preprocessbackbone, 1, 0, 1, "backbone preprocessing") \
   OPTION (preprocesscongruence, 1, 0, 1, "congruence preprocessing") \
@@ -124,7 +125,7 @@
   OPTION (restart, 1, 0, 1, "enable restarts") \
   OPTION (restartint, RESTARTINT_DEFAULT, 1, 1e4, "base restart interval") \
   OPTION (restartmargin, 10, 0, 25, "fast/slow margin in percent") \
-  OPTION (restartreusestable, 0, 0, 1, "reuse trail in stable mode too") \
+  HEAPOPT (restartreusestable, 0, 0, 1, "reuse trail in stable mode too") \
   OPTION (restartreusetrail, 1, 0, 1, "restarts tries to reuse trail") \
   OPTION (seed, 0, 0, INT_MAX, "random seed") \
   OPTION (shrink, 3, 0, 3, "learned clauses (1=bin,2=lrg,3=rec)") \
@@ -215,6 +216,17 @@
 #define EMBOPT OPTION
 #else
 #define EMBOPT(...) /**/
+#endif
+
+// Options of HeapArgmax builds only and of tree builds only (see
+// 'policy.h').
+
+#ifdef HEAPARGMAX
+#define HEAPOPT OPTION
+#define TREEOPT(...) /**/
+#else
+#define HEAPOPT(...) /**/
+#define TREEOPT OPTION
 #endif
 
 // clang-format on
