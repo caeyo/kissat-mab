@@ -33,6 +33,12 @@ unsigned kissat_policy_pick (kissat *solver) {
   return heap_argmax_pick (solver);
 }
 
+unsigned kissat_policy_peek (kissat *solver) {
+  assert (solver->stable);
+  assert (solver->unassigned);
+  return heap_argmax_pick (solver);
+}
+
 void kissat_update_scores (kissat *solver) {
   assert (solver->stable);
   heap *scores = SCORES;

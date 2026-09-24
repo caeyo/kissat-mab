@@ -90,6 +90,14 @@ static unsigned reuse_trail (kissat *solver) {
   if (!GET_OPTION (restartreusetrail))
     return 0;
 
+  // The stable-mode peek predicts the next decision by asking the policy,
+  // which only an argmax policy can answer, so the fork disables it in
+  // every arm.  '--restartreusestable=1' restores Kissat's behaviour, for
+  // the heap-path regression test.
+
+  if (solver->stable && !GET_OPTION (restartreusestable))
+    return 0;
+
   unsigned res;
 
   if (solver->stable)

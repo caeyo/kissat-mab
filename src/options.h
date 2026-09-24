@@ -124,6 +124,7 @@
   OPTION (restart, 1, 0, 1, "enable restarts") \
   OPTION (restartint, RESTARTINT_DEFAULT, 1, 1e4, "base restart interval") \
   OPTION (restartmargin, 10, 0, 25, "fast/slow margin in percent") \
+  OPTION (restartreusestable, 0, 0, 1, "reuse trail in stable mode too") \
   OPTION (restartreusetrail, 1, 0, 1, "restarts tries to reuse trail") \
   OPTION (seed, 0, 0, INT_MAX, "random seed") \
   OPTION (shrink, 3, 0, 3, "learned clauses (1=bin,2=lrg,3=rec)") \
