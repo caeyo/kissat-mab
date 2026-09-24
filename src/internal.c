@@ -257,6 +257,10 @@ void kissat_print_statistics (kissat *solver) {
 #endif
   kissat_section (solver, "glue usage");
   kissat_print_glue_usage (solver);
+#ifdef DECHASH
+  kissat_section (solver, "decision hash");
+  kissat_print_dechash (solver);
+#endif
   kissat_section (solver, "resources");
   kissat_print_resources (solver);
 #endif

@@ -11,6 +11,7 @@ check_walk=no
 compact=no
 coverage=no
 debug=no
+dechash=no
 default=no
 embedded=unknown
 extreme=no
@@ -159,6 +160,11 @@ Enable (very) expensive low-level checkers for data structures:
    --check-walk     check consistency of local search
 
 Enabling any of these enforces assertion and online proof checking ('-c').
+
+Print a hash of the decision trail at the end of every run (see
+'src/dechash.h'), used by the heap-path regression test:
+
+   --dechash        hash every decision (off by default)
 We also allow an explicit choice of the C compiler.
 
   CC=<compiler>     default is 'gcc' (and we regularly test with 'CC=clang')
@@ -288,6 +294,7 @@ do
 
     --check-all) check_all=yes;;
     --check-heap) check_heap=yes;;
+    --dechash) dechash=yes;;
     --check-kitten) check_kitten=yes;;
     --check-queue) check_queue=yes;;
     --check-vectors) check_vectors=yes;;
@@ -592,6 +599,7 @@ esac
 [ $asan = yes ] && CFLAGS="$CFLAGS -DASAN"
 [ $lto = yes ] && CFLAGS="$CFLAGS -DLTO"
 [ $check_heap = yes ] && CFLAGS="$CFLAGS -DCHECK_HEAP"
+[ $dechash = yes ] && CFLAGS="$CFLAGS -DDECHASH"
 [ $check_kitten = yes ] && CFLAGS="$CFLAGS -DCHECK_KITTEN"
 [ $check_queue = yes ] && CFLAGS="$CFLAGS -DCHECK_QUEUE"
 [ $check_vectors = yes ] && CFLAGS="$CFLAGS -DCHECK_VECTORS"

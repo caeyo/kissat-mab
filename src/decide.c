@@ -228,6 +228,7 @@ void kissat_decide (kissat *solver) {
   kissat_push_frame (solver, lit);
   assert (solver->level < SIZE_STACK (solver->frames));
   LOG ("decide literal %s", LOGLIT (lit));
+  UPDATE_DECHASH (lit);
   kissat_assign_decision (solver, lit);
   STOP (decide);
 }

@@ -9,6 +9,7 @@
 #include "classify.h"
 #include "clause.h"
 #include "cover.h"
+#include "dechash.h"
 #include "extend.h"
 #include "flags.h"
 #include "format.h"
@@ -239,6 +240,10 @@ struct kissat {
 
 #ifndef NPROOFS
   proof *proof;
+#endif
+
+#ifdef DECHASH
+  dechash dechash;
 #endif
 
   statistics statistics;
