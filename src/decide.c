@@ -4,7 +4,7 @@
 #include "policy.h"
 #include "print.h"
 
-#ifndef HEAPARGMAX
+#if !defined(HEAPARGMAX) && !defined(NDECISIONMETRICS)
 #include "inlinepolicy.h"
 #endif
 
@@ -106,13 +106,13 @@ unsigned kissat_next_decision_variable (kissat *solver) {
 #ifdef LOGGING
   const char *type = 0;
 #endif
-#ifndef HEAPARGMAX
+#if !defined(HEAPARGMAX) && !defined(NDECISIONMETRICS)
   // Tree builds time every stable-mode decision (see 'policy.h').
   const bool stable = solver->stable;
   const uint64_t start = stable ? kissat_policy_clock () : 0;
 #endif
   unsigned res = next_random_decision (solver);
-#ifndef HEAPARGMAX
+#if !defined(HEAPARGMAX) && !defined(NDECISIONMETRICS)
   const bool random = res != INVALID_IDX;
 #endif
   if (res == INVALID_IDX) {
@@ -136,7 +136,7 @@ unsigned kissat_next_decision_variable (kissat *solver) {
     INC (random_decisions);
   }
   LOG ("next %s decision %s", type, LOGVAR (res));
-#ifndef HEAPARGMAX
+#if !defined(HEAPARGMAX) && !defined(NDECISIONMETRICS)
   if (stable)
     kissat_policy_decided (solver, res, random, start);
 #endif

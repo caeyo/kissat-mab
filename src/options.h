@@ -79,8 +79,8 @@
   OPTION (lucky, 1, 0, 1, "try some lucky assignments") \
   OPTION (luckyearly, 1, 0, 1, "lucky assignments before preprocessing") \
   OPTION (luckylate, 1, 0, 1, "lucky assignments after preprocessing") \
-  TREEOPT (metricsint, 1e3, 0, INT_MAX, "decisions between decision metrics samples") \
-  TREEOPT (metricsvars, 1, 0, 1, "at least as many decisions as variables between samples") \
+  METOPT (metricsint, 1e3, 0, INT_MAX, "decisions between decision metrics samples") \
+  METOPT (metricsvars, 1, 0, 1, "at least as many decisions as variables between samples") \
   OPTION (mineffort, 10, 0, INT_MAX, "minimum absolute effort in millions") \
   OPTION (minimize, 1, 0, 1, "learned clause minimization") \
   OPTION (minimizedepth, 1e3, 1, 1e6, "minimization depth") \
@@ -233,6 +233,15 @@
 #else
 #define HEAPOPT(...) /**/
 #define TREEOPT OPTION
+#endif
+
+// Options of the decision metrics, in tree builds unless compiled out by
+// './configure --no-decision-metrics' (see 'policy.h').
+
+#if defined(HEAPARGMAX) || defined(NDECISIONMETRICS)
+#define METOPT(...) /**/
+#else
+#define METOPT OPTION
 #endif
 
 // clang-format on

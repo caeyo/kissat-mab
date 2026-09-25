@@ -270,6 +270,8 @@ static inline void kissat_end_bulk_score_change (kissat *solver) {
   kissat_rebuild_policy (solver);
 }
 
+#ifdef DECISION_METRICS
+
 // A stable-mode decision chose 'idx', a random decision of a burst if
 // 'random' and a pick of the policy otherwise, and choosing it began when
 // the clock read 'start'.  Counts and times the decision and has every
@@ -295,6 +297,8 @@ static inline void kissat_policy_decided (kissat *solver, unsigned idx,
   metrics->since = 0;
   kissat_sample_decision (solver, idx, random);
 }
+
+#endif
 
 #endif
 

@@ -110,6 +110,8 @@ static void test_policy_fallback (void) {
   kissat_release (solver);
 }
 
+#ifdef DECISION_METRICS
+
 // Decision metrics.  A sample at every decision, whatever the number of
 // variables.
 
@@ -352,16 +354,20 @@ static void test_policy_metrics_schedule (void) {
 
 #endif
 
+#endif
+
 void tissat_schedule_policy (void) {
 #if !defined(HEAPARGMAX) && !defined(NOPTIONS)
   SCHEDULE_FUNCTION (test_policy_start);
   SCHEDULE_FUNCTION (test_policy_sample);
   SCHEDULE_FUNCTION (test_policy_fallback);
+#ifdef DECISION_METRICS
   SCHEDULE_FUNCTION (test_policy_metrics_argmax);
   SCHEDULE_FUNCTION (test_policy_metrics_sample);
   SCHEDULE_FUNCTION (test_policy_metrics_chb);
   SCHEDULE_FUNCTION (test_policy_metrics_random);
   SCHEDULE_FUNCTION (test_policy_metrics_fallback);
   SCHEDULE_FUNCTION (test_policy_metrics_schedule);
+#endif
 #endif
 }

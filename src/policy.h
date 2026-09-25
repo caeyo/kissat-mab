@@ -72,7 +72,10 @@
 // adds the distribution's entropy, the probability it gives to a variable
 // other than Argmax's choice and to a score below the largest, and whether
 // the decision made was either.  The metrics only read the solver's state
-// and draw nothing, so no decision depends on them.
+// and draw nothing, so no decision depends on them.  They are compiled into
+// every tree build, the builds the experiments run, unless './configure
+// --no-decision-metrics' ('-DNDECISIONMETRICS') leaves them out, for builds
+// that must carry no instrumentation (profiling, a competition entry).
 //
 // HeapArgmax builds ('./configure --heap-argmax', '-DHEAPARGMAX'): the
 // variable of largest score on the binary heap 'SCORES', popping assigned
@@ -142,11 +145,18 @@ struct estimator {
 #include "random.h"
 #include "tree.h"
 
+#ifndef NDECISIONMETRICS
+#define DECISION_METRICS
+#endif
+
+typedef struct policy policy;
+
+#ifdef DECISION_METRICS
+
 #if !defined(__x86_64__) && !defined(__i386__)
 #include "resources.h"
 #endif
 
-typedef struct policy policy;
 typedef struct policy_metrics policy_metrics;
 
 // Decision metrics of one phase, search or warm-up (see above).  The sums
@@ -168,6 +178,8 @@ struct policy_metrics {
   double lower;       // sum of probabilities of a score below the top
 };
 
+#endif
+
 struct policy {
   tree tree;        // the available variables, their scores and weights
   generator random; // the policy's own generator
@@ -179,12 +191,14 @@ struct policy {
     uint64_t fallbacks[2]; // Sample: picks that fell back to Argmax
     uint64_t first;        // bump round of the first fallback
   } count;
+#ifdef DECISION_METRICS
   policy_metrics metrics[2]; // search [0] and warm-up [1]
   struct {
     uint64_t start; // clock at the start of the search
     double started; // wall-clock time then, to calibrate the clock
     uint64_t ticks; // clock ticks spent in the samples' passes
   } clock;
+#endif
 #ifdef SHADOW
   struct {
     uint64_t picks;    // picks
@@ -208,6 +222,8 @@ static inline generator kissat_policy_generator (unsigned seed) {
   return z ^ (z >> 31);
 }
 
+#ifdef DECISION_METRICS
+
 // The clock of the decision metrics: the time-stamp counter on x86, whose
 // rate the policy measures against the wall clock over the run, and
 // elsewhere the wall clock in nanoseconds (microsecond resolution).
@@ -219,6 +235,8 @@ static inline uint64_t kissat_policy_clock (void) {
   return 1e9 * kissat_wall_clock_time ();
 #endif
 }
+
+#endif
 
 #endif
 
@@ -236,7 +254,9 @@ void kissat_print_estimator_statistics (struct kissat *);
 #ifndef HEAPARGMAX
 void kissat_start_policy (struct kissat *);
 void kissat_rebuild_policy (struct kissat *);
+#ifdef DECISION_METRICS
 void kissat_sample_decision (struct kissat *, unsigned idx, bool random);
+#endif
 void kissat_print_policy_statistics (struct kissat *);
 #ifdef SHADOW
 void kissat_print_shadow_statistics (struct kissat *);

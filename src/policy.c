@@ -361,6 +361,8 @@ void kissat_rebuild_policy (kissat *solver) {
 #endif
 }
 
+#ifdef DECISION_METRICS
+
 // Decision metrics (see 'policy.h').  A sample is one pass over the
 // variables at a decision of 'idx', due for a sample, which finds Argmax's
 // choice among the unassigned active variables (the largest score, the
@@ -445,7 +447,9 @@ void kissat_sample_decision (kissat *solver, unsigned idx, bool random) {
     policy->clock.ticks += stop - start;
 }
 
-#ifndef QUIET
+#endif
+
+#if defined(DECISION_METRICS) && !defined(QUIET)
 
 // Clock ticks per second, measured against the wall clock since the start
 // of the search; zero if the search has not started.
@@ -468,8 +472,10 @@ static double policy_clock_rate (kissat *solver) {
 
 void kissat_start_policy (kissat *solver) {
   policy *const policy = &solver->policy;
+#ifdef DECISION_METRICS
   policy->clock.start = kissat_policy_clock ();
   policy->clock.started = kissat_wall_clock_time ();
+#endif
   const unsigned seed = GET_OPTION (policyseed);
   policy->random = kissat_policy_generator (seed);
   LOG ("initialized policy random number generator with seed %u", seed);
@@ -498,6 +504,7 @@ void kissat_print_policy_statistics (kissat *solver) {
   if (policy->count.fallbacks[0] | policy->count.fallbacks[1])
     kissat_message (solver, "policy-first-fallback-round %" PRIu64,
                     policy->count.first);
+#ifdef DECISION_METRICS
   // Decision metrics: means per decision and per sample.
   const double hz = policy_clock_rate (solver);
   kissat_message (solver, "policy-random-decisions %" PRIu64,
@@ -528,6 +535,7 @@ void kissat_print_policy_statistics (kissat *solver) {
   kissat_message (solver, "policy-metrics-seconds %.9g",
                   hz ? policy->clock.ticks / hz : 0);
   kissat_message (solver, "policy-clock-hz %.9g", hz);
+#endif
 #else
   (void) solver;
 #endif

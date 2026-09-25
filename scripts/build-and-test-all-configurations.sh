@@ -27,7 +27,7 @@ exit 0
 
 # All './configure' options except '-p' (pedantic).
 
-all="--default -m32 -c -g -l -s --dechash --heap-argmax --shadow --coverage --profile --compact --no-options --quiet --metrics --stats --no-proofs -fPIC --shared --kitten --no-metrics --no-stats -flto"
+all="--default -m32 -c -g -l -s --dechash --heap-argmax --shadow --no-decision-metrics --coverage --profile --compact --no-options --quiet --metrics --stats --no-proofs -fPIC --shared --kitten --no-metrics --no-stats -flto"
 
 tmp=/tmp/m32-support-$$
 cat <<EOF > $tmp.c

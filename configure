@@ -12,6 +12,7 @@ compact=no
 coverage=no
 debug=no
 dechash=no
+decisionmetrics=yes
 default=no
 heapargmax=no
 embedded=unknown
@@ -177,6 +178,12 @@ tree with maximum and the score heap is not compiled in (see
    --shadow         the tree plus the heap alongside it, every tree pick
                     checked against the heap (implies '-c')
 
+Tree builds time every stable-mode decision and sample the distribution
+it was drawn from (decision metrics, see 'src/policy.h'); the experiments
+run them.  For builds that must carry no instrumentation:
+
+   --no-decision-metrics  compile the decision metrics out
+
 We also allow an explicit choice of the C compiler.
 
   CC=<compiler>     default is 'gcc' (and we regularly test with 'CC=clang')
@@ -309,6 +316,7 @@ do
     --dechash) dechash=yes;;
     --heap-argmax) heapargmax=yes;;
     --shadow) shadow=yes;;
+    --no-decision-metrics) decisionmetrics=no;;
     --check-kitten) check_kitten=yes;;
     --check-queue) check_queue=yes;;
     --check-vectors) check_vectors=yes;;
@@ -620,6 +628,7 @@ esac
 [ $dechash = yes ] && CFLAGS="$CFLAGS -DDECHASH"
 [ $heapargmax = yes ] && CFLAGS="$CFLAGS -DHEAPARGMAX"
 [ $shadow = yes ] && CFLAGS="$CFLAGS -DSHADOW"
+[ $decisionmetrics = no ] && CFLAGS="$CFLAGS -DNDECISIONMETRICS"
 [ $check_kitten = yes ] && CFLAGS="$CFLAGS -DCHECK_KITTEN"
 [ $check_queue = yes ] && CFLAGS="$CFLAGS -DCHECK_QUEUE"
 [ $check_vectors = yes ] && CFLAGS="$CFLAGS -DCHECK_VECTORS"
