@@ -176,24 +176,31 @@ static inline double kissat_tree_scaled (tree_weight weight, int exponent) {
   return weight.mantissa * kissat_tree_pow2 (d);
 }
 
-// The sum of two weights, as the tree computes it: the larger exponent,
-// and the other mantissa scaled to it, or dropped if it is negligible.  It
-// does not depend on the order of the arguments.  Branch-free, because
-// which child has the larger exponent is not predictable.  A scaling
-// exponent of -1023 has bit pattern zero, i.e. it scales to 0.
+// 2^d for 'd' from '-TREE_NEGLIGIBLE' to 0, and 0 below, without a
+// branch.  A scaling exponent of -1023 has bit pattern zero, i.e. 0.
 
-static inline tree_weight kissat_tree_add (tree_weight a, tree_weight b) {
-  const bool swap = a.exponent < b.exponent;
-  const int exponent = swap ? b.exponent : a.exponent;
-  const int other = swap ? a.exponent : b.exponent;
-  const double large = swap ? b.mantissa : a.mantissa;
-  const double small = swap ? a.mantissa : b.mantissa;
-  int d = other - exponent;
+static inline double kissat_tree_scale_factor (int d) {
+  assert (d <= 0);
   d = d < -TREE_NEGLIGIBLE ? -1023 : d;
   const uint64_t bits = (uint64_t) (d + 1023) << 52;
-  double factor;
-  memcpy (&factor, &bits, sizeof factor);
-  tree_weight res = {large + small * factor, exponent};
+  double res;
+  memcpy (&res, &bits, sizeof res);
+  return res;
+}
+
+// The sum of two weights, as the tree computes it: the larger exponent,
+// and the other mantissa scaled to it, or dropped if it is negligible.
+// Both mantissas are scaled to the larger exponent, one of them by exactly
+// 1, so no double is selected by a comparison (which the compiler turns
+// into an unpredictable branch), and the result does not depend on the
+// order of the arguments: both products are exact, and their sum is
+// rounded once.
+
+static inline tree_weight kissat_tree_add (tree_weight a, tree_weight b) {
+  const int exponent = a.exponent < b.exponent ? b.exponent : a.exponent;
+  const double fa = kissat_tree_scale_factor (a.exponent - exponent);
+  const double fb = kissat_tree_scale_factor (b.exponent - exponent);
+  tree_weight res = {a.mantissa * fa + b.mantissa * fb, exponent};
   return res;
 }
 

@@ -70,11 +70,20 @@ static inline void kissat_tree_set (tree *tree, unsigned idx, double key,
       args[i] = kissat_tree_children_max (tree, i);
   }
   if (tree->weighted) {
-    tree->weights[idx] = key == TREE_ABSENT
-                             ? kissat_tree_zero_weight ()
-                             : kissat_tree_weight_of_log2 (log2_weight);
-    for (unsigned i = first; i; i /= 2)
-      kissat_tree_update_sum (tree, i);
+    // The sums from the leaf up to the root, the running sum kept in a
+    // register rather than read back from the node just written.
+    const tree_weight weight = key == TREE_ABSENT
+                                   ? kissat_tree_zero_weight ()
+                                   : kissat_tree_weight_of_log2 (log2_weight);
+    tree_weight *const weights = tree->weights;
+    tree_weight *const sums = tree->sums;
+    weights[idx] = weight;
+    tree_weight sum = kissat_tree_add (weight, weights[idx ^ 1]);
+    sums[first] = sum;
+    for (unsigned i = first; i > 1; i /= 2) {
+      sum = kissat_tree_add (sum, sums[i ^ 1]);
+      sums[i / 2] = sum;
+    }
   } else
     (void) log2_weight;
 }
