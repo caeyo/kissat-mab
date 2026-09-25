@@ -1,4 +1,5 @@
 #include "propsearch.h"
+#include "chb.h"
 #include "fastassign.h"
 #include "print.h"
 #include "trail.h"
@@ -51,6 +52,10 @@ clause *kissat_search_propagate (kissat *solver) {
   solver->ticks = 0;
   const unsigned *saved_propagate = solver->propagate;
   clause *conflict = search_propagate (solver);
+#ifndef HEAPARGMAX
+  if (kissat_chb (solver))
+    kissat_chb_assign (solver, conflict != 0); // pays CHB's rewards
+#endif
   update_search_propagation_statistics (solver, saved_propagate);
   kissat_update_conflicts_and_trail (solver, conflict, true);
   if (conflict && solver->randec) {

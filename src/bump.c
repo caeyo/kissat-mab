@@ -1,5 +1,6 @@
 #include "bump.h"
 #include "analyze.h"
+#include "chb.h"
 #include "inlinepolicy.h"
 #include "inlinequeue.h"
 #include "inlinevector.h"
@@ -121,11 +122,18 @@ static void move_analyzed_variables_to_front_of_queue (kissat *solver) {
   CLEAR_STACK (solver->ranks);
 }
 
+// With CHB scores (tree builds, see 'chb.h') a stable-mode conflict bumps
+// nothing: it records that the analyzed variables took part in it.
+
 void kissat_bump_analyzed (kissat *solver) {
   START (bump);
   const size_t bumped = SIZE_STACK (solver->analyzed);
   if (!solver->stable)
     move_analyzed_variables_to_front_of_queue (solver);
+#ifndef HEAPARGMAX
+  else if (kissat_chb (solver))
+    kissat_chb_analyzed (solver);
+#endif
   else
     bump_analyzed_variable_scores (solver);
   ADD (literals_bumped, bumped);

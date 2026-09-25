@@ -1,6 +1,7 @@
 #include "analyze.h"
 #include "backtrack.h"
 #include "bump.h"
+#include "chb.h"
 #include "deduce.h"
 #include "inline.h"
 #include "learn.h"
@@ -173,6 +174,12 @@ static void analyze_reason_side_literals (kissat *solver) {
     return;
   if (solver->probing)
     return;
+#ifndef HEAPARGMAX
+  // Reason-side literals only serve bumping, and CHB's conflicts involve
+  // the clauses of the analysis alone (see 'chb.h').
+  if (solver->stable && kissat_chb (solver))
+    return;
+#endif
   if (DELAYING (bumpreasons))
     return;
   const double decision_rate = AVERAGE (decision_rate);

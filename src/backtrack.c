@@ -1,5 +1,6 @@
 #include "backtrack.h"
 #include "analyze.h"
+#include "chb.h"
 #include "inline.h"
 #include "inlinepolicy.h"
 #include "inlinequeue.h"
@@ -130,6 +131,9 @@ void kissat_backtrack_without_updating_phases (kissat *solver,
     }
   }
   SET_END_OF_ARRAY (solver->trail, q);
+#ifndef HEAPARGMAX
+  kissat_chb_shrink_trail (solver, q - trail);
+#endif
 
   solver->level = new_level;
   LOG ("unassigned %u literals", unassigned);

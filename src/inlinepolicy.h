@@ -38,11 +38,33 @@
 // The pseudo-activity (all builds, see 'estimator' in 'policy.h') is
 // added to a score where Kissat sets it at activation and after bounded
 // variable addition.
+//
+// With CHB scores (tree builds, 'chb=1', see 'chb.h') a score is the
+// variable's ERWA value Q: it starts at zero at activation, there is no
+// pseudo-activity, and CHB pays it after every search propagation.
 
+#include "chb.h"
 #include "internal.h"
 
 static inline double kissat_pseudo_activity (kissat *solver) {
+#ifndef HEAPARGMAX
+  if (kissat_chb (solver))
+    return 0;
+#endif
   return GET_OPTION (pseudoactivity) ? solver->estimator.pseudo : 0;
+}
+
+// The score a variable starts with at activation: for the k-th activated
+// variable Kissat's 1 - 1/k plus the pseudo-activity, or Q = 0 under CHB.
+
+static inline double kissat_initial_score (kissat *solver) {
+#ifndef HEAPARGMAX
+  if (kissat_chb (solver))
+    return 0;
+#endif
+  double score = 1.0 - 1.0 / solver->statistics.variables_activated;
+  score += kissat_pseudo_activity (solver);
+  return score;
 }
 
 #ifdef HEAPARGMAX
@@ -117,11 +139,17 @@ static inline double kissat_get_score (kissat *solver, unsigned idx) {
 
 // Sample's weight of a score, score^eta, as the tree takes it: its base-2
 // logarithm eta * log2 (score), exact in the multiplication since eta is a
-// power of two.  Minus infinity (weight zero) for a score of zero.
+// power of two.  Minus infinity (weight zero) for a score of zero.  With
+// CHB scores the weight of Q is exp (eta * Q), i.e. eta * Q * log2 (e),
+// at least zero (weight one).
+
+#define KISSAT_LOG2_E 1.4426950408889634
 
 static inline double kissat_policy_log2_weight (const policy *policy,
                                                 double score) {
   assert (score >= 0);
+  if (policy->chb)
+    return ldexp (score * KISSAT_LOG2_E, policy->etalog2);
   return ldexp (log2 (score), policy->etalog2);
 }
 

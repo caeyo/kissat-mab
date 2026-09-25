@@ -84,6 +84,7 @@ void kissat_release (kissat *solver) {
 #endif
 #ifndef HEAPARGMAX
   DEALLOC_VARIABLE_INDEXED (score);
+  DEALLOC_VARIABLE_INDEXED (last_conflict);
   kissat_release_tree (solver, &solver->policy.tree);
 #endif
   kissat_release_heap (solver, &solver->schedule);

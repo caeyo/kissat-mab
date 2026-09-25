@@ -17,6 +17,7 @@
   OPTION (bumpreasons, 1, 0, 1, "bump reason side literals too") \
   OPTION (bumpreasonslimit, 10, 1, INT_MAX, "relative reason literals limit") \
   OPTION (bumpreasonsrate, 10, 1, INT_MAX, "decision rate limit") \
+  TREEOPT (chb, 0, 0, 1, "CHB scores instead of VSIDS in stable mode") \
   DBGOPT (check, 2, 0, 2, "check model (1) and derived clauses (2)") \
   OPTION (chrono, 1, 0, 1, "allow chronological backtracking") \
   OPTION (chronolevels, 100, 0, INT_MAX, "maximum jumped over levels") \

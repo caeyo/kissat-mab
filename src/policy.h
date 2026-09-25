@@ -45,7 +45,9 @@
 //   however far it lies from the others.  A draw that meets an assigned
 //   variable removes it and draws again.  If no leaf left in the tree has
 //   a positive weight, i.e. every unassigned variable has score zero, the
-//   pick falls back to Argmax's choice (the fallback).
+//   pick falls back to Argmax's choice (the fallback).  With CHB scores
+//   ('chb=1', see 'chb.h') the weight of a score Q is exp (eta * Q),
+//   given as eta * Q * log2 (e): at least one, so there is no fallback.
 //
 // The policy owns a random generator, seeded from the option 'policyseed'
 // at the start of the search, for the draws of Sample (Argmax draws
@@ -86,6 +88,13 @@
 // rescales.  'rounds' counts bump rounds, i.e. the stable-mode conflicts
 // that bumped scores and grew the increment, the unit in which the decay
 // counts age.
+//
+// Tree builds have a second score vector, CHB's (option 'chb', see
+// 'chb.h'), which replaces the VSIDS activities in stable mode when
+// selected: the score of a variable is then its ERWA value Q, paid at
+// assignment, and there is no pseudo-activity, bumping, decay or
+// rescaling.  Its bookkeeping is 'chb' below and the solver's
+// variable-indexed array 'last_conflict'.
 
 typedef struct estimator estimator;
 
@@ -97,6 +106,15 @@ struct estimator {
     uint64_t round;   // bump round at which 'pseudo' became zero
     uint64_t rescale; // number of that rescale, zero while 'pseudo' > 0
   } zero;
+#ifndef HEAPARGMAX
+  struct {
+    uint64_t conflicts; // stable-mode search conflicts ('numConflicts')
+    uint64_t analyzed;  // of which recorded participating variables
+    uint64_t recorded;  // the last conflict that recorded them
+    uint64_t plays;     // rewards paid, i.e. updates of Q
+    unsigned played;    // trail position up to which rewards are paid
+  } chb;
+#endif
 };
 
 #ifndef HEAPARGMAX
@@ -110,6 +128,7 @@ struct policy {
   tree tree;        // the available variables, their scores and weights
   generator random; // the policy's own generator
   bool bulk;        // tree updates deferred until a rebuild
+  bool chb;         // Sample: weights exp (eta * Q) of CHB scores Q
   int etalog2;      // Sample: eta = 2^etalog2 (tree weighted)
   struct {
     uint64_t picks[2];     // picks in search [0] and in warm-up [1]

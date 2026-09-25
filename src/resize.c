@@ -71,6 +71,7 @@ void kissat_increase_size (kissat *solver, unsigned new_size) {
 #endif
 #ifndef HEAPARGMAX
   CREALLOC_VARIABLE_INDEXED (double, score);
+  CREALLOC_VARIABLE_INDEXED (uint64_t, last_conflict);
   kissat_resize_tree (solver, &solver->policy.tree, new_size);
 #endif
   kissat_increase_phases (solver, new_size);
@@ -106,6 +107,7 @@ void kissat_decrease_size (kissat *solver) {
 #endif
 #ifndef HEAPARGMAX
   NREALLOC_VARIABLE_INDEXED (double, score);
+  NREALLOC_VARIABLE_INDEXED (uint64_t, last_conflict);
   kissat_resize_tree (solver, &solver->policy.tree, new_size);
 #endif
   kissat_decrease_phases (solver, new_size);

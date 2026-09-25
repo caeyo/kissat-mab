@@ -18,6 +18,18 @@ void kissat_print_estimator_statistics (kissat *solver) {
                   estimator->zero.round);
   kissat_message (solver, "estimator-pseudo-zero-rescale %" PRIu64,
                   estimator->zero.rescale);
+#ifndef HEAPARGMAX
+  if (kissat_chb (solver)) {
+    kissat_message (solver, "estimator-chb-conflicts %" PRIu64,
+                    estimator->chb.conflicts);
+    kissat_message (solver, "estimator-chb-analyzed %" PRIu64,
+                    estimator->chb.analyzed);
+    kissat_message (solver, "estimator-chb-plays %" PRIu64,
+                    estimator->chb.plays);
+    kissat_message (solver, "estimator-chb-alpha %.17g",
+                    kissat_chb_alpha (estimator->chb.conflicts));
+  }
+#endif
 #else
   (void) solver;
 #endif
@@ -357,8 +369,11 @@ void kissat_start_policy (kissat *solver) {
   const unsigned seed = GET_OPTION (policyseed);
   policy->random = kissat_policy_generator (seed);
   LOG ("initialized policy random number generator with seed %u", seed);
+  if (kissat_chb (solver))
+    kissat_very_verbose (solver, "CHB scores in stable mode");
   if (!GET_OPTION (softmax) || policy->tree.weighted)
     return;
+  policy->chb = kissat_chb (solver);
   policy->etalog2 = GET_OPTION (etalog2);
   kissat_weigh_tree (solver, &policy->tree);
   kissat_rebuild_policy (solver);

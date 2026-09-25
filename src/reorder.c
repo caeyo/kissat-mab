@@ -1,6 +1,7 @@
 #include "reorder.h"
 #include "backtrack.h"
 #include "bump.h"
+#include "chb.h"
 #include "inline.h"
 #include "inlinepolicy.h"
 #include "inlinequeue.h"
@@ -204,9 +205,16 @@ void kissat_reorder (kissat *solver) {
                 " conflicts in %s mode ",
                 solver->limits.reorder.conflicts, CONFLICTS,
                 solver->stable ? "stable" : "focused");
-  if (solver->stable)
-    reorder_stable (solver);
-  else
+  if (solver->stable) {
+#ifndef HEAPARGMAX
+    // Part of the VSIDS estimator: CHB's scores are left alone, and only
+    // the schedule advances (see 'chb.h').
+    if (kissat_chb (solver))
+      LOG ("CHB scores not reordered");
+    else
+#endif
+      reorder_stable (solver);
+  } else
     reorder_focused (solver);
   kissat_phase (solver, "reorder", GET (reordered),
                 "reordered decisions in %s search mode",

@@ -132,6 +132,7 @@ struct kissat {
 #endif
 #ifndef HEAPARGMAX
   double *score;
+  uint64_t *last_conflict;
   policy policy;
 #endif
   double scinc;

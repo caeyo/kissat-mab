@@ -453,6 +453,7 @@ int main (int argc, char **argv) {
   SCHEDULE (rank);
   SCHEDULE (sort);
   SCHEDULE (bump);
+  SCHEDULE (chb);
   SCHEDULE (options);
   SCHEDULE (config);
   SCHEDULE (init);
