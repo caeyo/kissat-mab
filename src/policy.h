@@ -29,13 +29,28 @@
 //
 // Tree builds (the default): the sum tree with maximum of 'tree.h' holds
 // the variables, and the score heap is not compiled in, so no code can
-// read a stale heap.  The policy is Argmax: the variable of largest score,
-// the smallest index among ties, with assigned variables removed from the
-// tree when a pick meets them (lazy deletion) and put back when they are
-// unassigned.  The policy owns a random generator, seeded from the option
-// 'policyseed' at the start of the search, for the draws of the sampling
-// policies (Argmax draws nothing); no other code draws from it, so the
-// random streams of the rest of the solver do not depend on the policy.
+// read a stale heap.  Assigned variables stay in the tree until a pick
+// meets them, which removes them (lazy deletion); backtracking puts them
+// back.  The option 'softmax', read at the start of the search, selects
+// the policy:
+//
+//   Argmax ('softmax=0', the default, i.e. eta = infinity): the variable
+//   of largest score, the smallest index among ties.  The tree keeps no
+//   weights.
+//
+//   Sample ('softmax=1'): a variable drawn with probability proportional
+//   to score^eta, with eta = 2^etalog2 (option 'etalog2').  Every leaf of
+//   the tree holds the weight score^eta, given to the tree as
+//   eta * log2 (score), whose own binary exponent keeps it representable
+//   however far it lies from the others.  A draw that meets an assigned
+//   variable removes it and draws again.  If no leaf left in the tree has
+//   a positive weight, i.e. every unassigned variable has score zero, the
+//   pick falls back to Argmax's choice (the fallback).
+//
+// The policy owns a random generator, seeded from the option 'policyseed'
+// at the start of the search, for the draws of Sample (Argmax draws
+// nothing); no other code draws from it, so the random streams of the rest
+// of the solver do not depend on the policy.
 //
 // HeapArgmax builds ('./configure --heap-argmax', '-DHEAPARGMAX'): the
 // variable of largest score on the binary heap 'SCORES', popping assigned
@@ -46,32 +61,65 @@
 //
 // Shadow builds ('./configure --shadow', '-DSHADOW', which implies
 // assertion checking): a tree build that also maintains the score heap,
-// with every score change and availability change applied to both.  At
-// every pick the largest score on the heap (popping assigned variables as
-// HeapArgmax does) must equal the largest score in the tree bitwise, and
-// every 1000 picks the whole tree is checked against the estimator, the
-// heap and the assignment.  A failed check is a fatal error.
+// with every score change and availability change applied to both.  Under
+// Argmax, at every pick the largest score on the heap (popping assigned
+// variables as HeapArgmax does) must equal the largest score in the tree
+// bitwise.  Under both policies, every 1000 picks the whole tree (keys,
+// weights and internal nodes) is checked against the estimator, the heap
+// and the assignment.  A failed check is a fatal error.
 
 #if defined(HEAPARGMAX) && defined(SHADOW)
 #error "'HEAPARGMAX' and 'SHADOW' exclude each other"
 #endif
+
+#include <stdint.h>
+
+// The fork's bookkeeping of the estimator (all builds).  The
+// pseudo-activity is the current value of a bump of the initial increment
+// made at time zero: it starts at the initial increment and every rescale
+// of the scores multiplies it by the rescale factor, as it does every
+// stored score.  With the option 'pseudoactivity' (the default) every
+// variable receives it at activation, on top of Kissat's initial score,
+// and the variables bounded variable addition introduces receive it in
+// place of Kissat's score zero; so every variable carries the same
+// constant.  In double precision it underflows to zero after enough
+// rescales.  'rounds' counts bump rounds, i.e. the stable-mode conflicts
+// that bumped scores and grew the increment, the unit in which the decay
+// counts age.
+
+typedef struct estimator estimator;
+
+struct estimator {
+  double pseudo;     // the pseudo-activity
+  uint64_t rounds;   // bump rounds
+  uint64_t rescales; // rescales of every score (overflow and 'reorder')
+  struct {
+    uint64_t round;   // bump round at which 'pseudo' became zero
+    uint64_t rescale; // number of that rescale, zero while 'pseudo' > 0
+  } zero;
+};
 
 #ifndef HEAPARGMAX
 
 #include "random.h"
 #include "tree.h"
 
-#include <stdint.h>
-
 typedef struct policy policy;
 
 struct policy {
-  tree tree;        // the available variables and their scores
+  tree tree;        // the available variables, their scores and weights
   generator random; // the policy's own generator
   bool bulk;        // tree updates deferred until a rebuild
+  int etalog2;      // Sample: eta = 2^etalog2 (tree weighted)
+  struct {
+    uint64_t picks[2];     // picks in search [0] and in warm-up [1]
+    uint64_t fallbacks[2]; // Sample: picks that fell back to Argmax
+    uint64_t first;        // bump round of the first fallback
+  } count;
 #ifdef SHADOW
   struct {
-    uint64_t picks;    // picks compared with the heap
+    uint64_t picks;    // picks
+    uint64_t compared; // Argmax: picks compared with the heap
     uint64_t differ;   // of which the heap's variable was another one
     uint64_t checks;   // complete checks of the tree
     uint64_t rebuilds; // tree rebuilds
@@ -98,15 +146,21 @@ struct kissat;
 unsigned kissat_policy_pick (struct kissat *);
 unsigned kissat_policy_peek (struct kissat *);
 void kissat_update_scores (struct kissat *);
+void kissat_print_estimator_statistics (struct kissat *);
+
+// 'kissat_start_policy' is called at the start of the search: it seeds
+// the policy's generator and, with 'softmax=1', gives the tree its
+// weights.
 
 #ifndef HEAPARGMAX
-void kissat_seed_policy (struct kissat *);
+void kissat_start_policy (struct kissat *);
 void kissat_rebuild_policy (struct kissat *);
+void kissat_print_policy_statistics (struct kissat *);
 #ifdef SHADOW
 void kissat_print_shadow_statistics (struct kissat *);
 #endif
 #else
-#define kissat_seed_policy(...) \
+#define kissat_start_policy(...) \
   do { \
   } while (0)
 #endif

@@ -57,6 +57,19 @@ void kissat_resize_tree (struct kissat *solver, tree *tree, unsigned size) {
   kissat_rebuild_tree (tree);
 }
 
+void kissat_weigh_tree (struct kissat *solver, tree *tree) {
+  assert (!tree->weighted);
+  tree->weighted = true;
+  const unsigned leaves = tree->leaves;
+  if (!leaves)
+    return;
+  tree->weights = kissat_nalloc (solver, leaves, sizeof *tree->weights);
+  tree->sums = kissat_nalloc (solver, leaves, sizeof *tree->sums);
+  for (unsigned idx = 0; idx < leaves; idx++)
+    tree->weights[idx] = kissat_tree_zero_weight ();
+  kissat_rebuild_tree (tree);
+}
+
 void kissat_release_tree (struct kissat *solver, tree *tree) {
   const unsigned leaves = tree->leaves;
   kissat_dealloc (solver, tree->keys, leaves, sizeof *tree->keys);

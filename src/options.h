@@ -50,6 +50,7 @@
   OPTION (emaslow, 1e5, 100, 1e6, "slow exponential moving average window") \
   EMBOPT (embedded, 1, 0, 1, "parse and apply embedded options") \
   OPTION (equivalences, 1, 0, 1, "extract and eliminate equivalence gates") \
+  TREEOPT (etalog2, 0, -16, 16, "softmax eta = 2^etalog2 (with softmax=1)") \
   OPTION (extract, 1, 0, 1, "extract gates in variable elimination") \
   OPTION (factor, 1, 0, 1, "bounded variable addition") \
   OPTION (factorcandrounds, 2, 0, INT_MAX, "candidates reduction rounds") \
@@ -100,6 +101,7 @@
   OPTION (proberounds, 2, 1, INT_MAX, "probing rounds") \
   NQTOPT (profile, 2, 0, 4, "profile level") \
   OPTION (promote, 1, 0, 1, "promote clauses") \
+  OPTION (pseudoactivity, 1, 0, 1, "one pseudo-bump per variable at activation") \
   NQTOPT (quiet, 0, 0, 1, "disable all messages") \
   OPTION (randec, 1, 0, 1, "random decisions") \
   OPTION (randecfocused, 1, 0, 1, "random decisions in focused mode") \
@@ -131,6 +133,7 @@
   OPTION (shrink, 3, 0, 3, "learned clauses (1=bin,2=lrg,3=rec)") \
   OPTION (simplify, 1, 0, 1, "enable probing and elimination") \
   OPTION (smallclauses, 1e5, 0, INT_MAX, "small clauses limit") \
+  TREEOPT (softmax, 0, 0, 1, "sample decisions from softmax of scores") \
   OPTION (stable, STABLE_DEFAULT, 0, 2, "enable stable search mode") \
   NQTOPT (statistics, 0, 0, 1, "print complete statistics") \
   OPTION (substitute, 1, 0, 1, "equivalent literal substitution") \

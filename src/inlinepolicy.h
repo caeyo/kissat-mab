@@ -30,9 +30,20 @@
 //
 // Tree builds: the scores are stored in the estimator's array 'score',
 // and the policy structure is the tree of 'policy.h', whose leaves hold a
-// copy of the score of every available variable.  A rescale rebuilds the
-// tree, since multiplying every score by the same factor can create ties.
-// Shadow builds apply every change to the heap 'SCORES' too.
+// copy of the score of every available variable and, under Sample, its
+// weight.  A rescale rebuilds the tree, since multiplying every score by
+// the same factor can create ties and changes every weight.  Shadow
+// builds apply every change to the heap 'SCORES' too.
+//
+// The pseudo-activity (all builds, see 'estimator' in 'policy.h') is
+// added to a score where Kissat sets it at activation and after bounded
+// variable addition.
+
+#include "internal.h"
+
+static inline double kissat_pseudo_activity (kissat *solver) {
+  return GET_OPTION (pseudoactivity) ? solver->estimator.pseudo : 0;
+}
 
 #ifdef HEAPARGMAX
 
@@ -104,10 +115,36 @@ static inline double kissat_get_score (kissat *solver, unsigned idx) {
   return solver->score[idx];
 }
 
+// Sample's weight of a score, score^eta, as the tree takes it: its base-2
+// logarithm eta * log2 (score), exact in the multiplication since eta is a
+// power of two.  Minus infinity (weight zero) for a score of zero.
+
+static inline double kissat_policy_log2_weight (const policy *policy,
+                                                double score) {
+  assert (score >= 0);
+  return ldexp (log2 (score), policy->etalog2);
+}
+
 // The key and, in a weighted tree, the weight of an available variable.
 
 static inline void kissat_policy_set_leaf (kissat *solver, unsigned idx) {
-  kissat_tree_set (&solver->policy.tree, idx, solver->score[idx], 0);
+  policy *const policy = &solver->policy;
+  tree *const tree = &policy->tree;
+  const double score = solver->score[idx];
+  const double log2_weight =
+      tree->weighted ? kissat_policy_log2_weight (policy, score) : 0;
+  kissat_tree_set (tree, idx, score, log2_weight);
+}
+
+// The same without recomputing the ancestors, for rebuilds.
+
+static inline void kissat_policy_put_leaf (kissat *solver, unsigned idx) {
+  policy *const policy = &solver->policy;
+  tree *const tree = &policy->tree;
+  const double score = solver->score[idx];
+  const double log2_weight =
+      tree->weighted ? kissat_policy_log2_weight (policy, score) : 0;
+  kissat_tree_put (tree, idx, score, log2_weight);
 }
 
 static inline void kissat_update_score (kissat *solver, unsigned idx,

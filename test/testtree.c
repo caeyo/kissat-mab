@@ -254,6 +254,59 @@ static void test_tree_weights (void) {
   assert (kissat_tree_same_weight (kissat_tree_add (a, c), a));
 }
 
+// An unweighted tree with present leaves gets weights: every leaf has
+// weight zero until put again, and the maxima are kept.  After putting
+// weights and rebuilding it equals a tree weighted from the start.
+
+static void test_tree_weigh (void) {
+  generator random = 11;
+  const unsigned vars = 37;
+  tree dummy, *tree = &dummy;
+  memset (tree, 0, sizeof *tree);
+  kissat_resize_tree (0, tree, vars);
+  struct tree dummy_copy, *copy = &dummy_copy;
+  memset (copy, 0, sizeof *copy);
+  copy->weighted = true;
+  kissat_resize_tree (0, copy, vars);
+  double log2_weights[64];
+  for (unsigned idx = 0; idx < vars; idx++) {
+    if (!(kissat_next_random32 (&random) % 3))
+      continue;
+    const double key = random_key (&random);
+    log2_weights[idx] = random_log2_weight (&random);
+    kissat_tree_set (tree, idx, key, 0);
+    kissat_tree_set (copy, idx, key, log2_weights[idx]);
+  }
+  const unsigned max = kissat_tree_max (tree);
+  kissat_weigh_tree (0, tree);
+  assert (tree->weighted);
+  assert (!kissat_tree_has_weight (tree));
+  assert (kissat_tree_max (tree) == max);
+  assert (!kissat_tree_inconsistent_node (tree));
+  for (unsigned idx = 0; idx < vars; idx++)
+    if (kissat_tree_contains (tree, idx))
+      kissat_tree_put (tree, idx, kissat_tree_key (tree, idx),
+                       log2_weights[idx]);
+  kissat_rebuild_tree (tree);
+  for (unsigned idx = 0; idx < tree->leaves; idx++)
+    assert (kissat_tree_same_weight (tree->weights[idx],
+                                     copy->weights[idx]));
+  for (unsigned i = 1; i < tree->leaves; i++) {
+    assert (tree->args[i] == copy->args[i]);
+    assert (kissat_tree_same_weight (tree->sums[i], copy->sums[i]));
+  }
+  kissat_resize_tree (0, tree, 2 * vars);
+  assert (!kissat_tree_inconsistent_node (tree));
+  kissat_release_tree (0, tree);
+  kissat_release_tree (0, copy);
+  memset (tree, 0, sizeof *tree);
+  kissat_weigh_tree (0, tree);
+  assert (tree->weighted && !tree->leaves);
+  kissat_resize_tree (0, tree, 3);
+  assert (!kissat_tree_has_weight (tree));
+  kissat_release_tree (0, tree);
+}
+
 void tissat_schedule_tree (void) {
   SCHEDULE_FUNCTION (test_tree_basic);
   SCHEDULE_FUNCTION (test_tree_random_unweighted);
@@ -261,4 +314,5 @@ void tissat_schedule_tree (void) {
   SCHEDULE_FUNCTION (test_tree_sample);
   SCHEDULE_FUNCTION (test_tree_sample_edges);
   SCHEDULE_FUNCTION (test_tree_weights);
+  SCHEDULE_FUNCTION (test_tree_weigh);
 }

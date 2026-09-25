@@ -62,7 +62,8 @@ struct tree_weight {
 };
 
 struct tree {
-  bool weighted;        // keep weights and sums (fixed before first resize)
+  bool weighted;        // keep weights and sums (set before the first
+                        // resize or by 'kissat_weigh_tree')
   unsigned leaves;      // number of leaves, a power of two, or zero
   unsigned *args;       // variable of largest key of internal nodes 1 ...
                         // leaves-1 (node 0 unused)
@@ -94,6 +95,12 @@ struct kissat;
 
 void kissat_resize_tree (struct kissat *, tree *, unsigned size);
 void kissat_release_tree (struct kissat *, tree *);
+
+// Gives an unweighted tree weights and sums.  Every leaf, present or not,
+// gets weight zero; the caller sets the weights of present leaves and
+// rebuilds.
+
+void kissat_weigh_tree (struct kissat *, tree *);
 
 // Recomputes every internal node from the leaves, in O(n).
 

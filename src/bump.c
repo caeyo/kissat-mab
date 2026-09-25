@@ -9,6 +9,8 @@
 #include "rank.h"
 #include "sort.h"
 
+#include <inttypes.h>
+
 #define RANK(A) ((A).rank)
 #define SMALLER(A, B) (RANK (A) < RANK (B))
 
@@ -25,6 +27,9 @@ static void sort_bump (kissat *solver) {
   }
 }
 
+// The pseudo-activity is rescaled with the scores, as a bump made at time
+// zero would be.  The estimator records when it reaches zero.
+
 void kissat_rescale_scores (kissat *solver) {
   INC (rescaled);
   const double max_score = kissat_max_score (solver);
@@ -35,8 +40,21 @@ void kissat_rescale_scores (kissat *solver) {
   const double factor = 1.0 / rescale;
   kissat_scale_scores (solver, factor);
   solver->scinc *= factor;
-  kissat_phase (solver, "rescale", GET (rescaled), "rescaled by factor %g",
-                factor);
+  estimator *const estimator = &solver->estimator;
+  const double old_pseudo = estimator->pseudo;
+  const double new_pseudo = old_pseudo * factor;
+  estimator->pseudo = new_pseudo;
+  estimator->rescales++;
+  if (old_pseudo > 0 && !(new_pseudo > 0)) {
+    estimator->zero.round = estimator->rounds;
+    estimator->zero.rescale = estimator->rescales;
+    kissat_phase (solver, "rescale", GET (rescaled),
+                  "pseudo-activity zero after %" PRIu64 " bump rounds",
+                  estimator->rounds);
+  }
+  kissat_phase (solver, "rescale", GET (rescaled),
+                "rescaled by factor %g (pseudo-activity %g)", factor,
+                new_pseudo);
 }
 
 void kissat_bump_score_increment (kissat *solver) {
@@ -66,7 +84,12 @@ void kissat_bump_variable (kissat *solver, unsigned idx) {
   bump_analyzed_variable_score (solver, idx);
 }
 
+// A bump round: every analyzed variable, then the increment.  It is
+// counted when it starts, so that a rescale during the round, triggered by
+// a score or by the increment, sees the number of the round.
+
 static void bump_analyzed_variable_scores (kissat *solver) {
+  solver->estimator.rounds++;
   flags *flags = solver->flags;
 
   for (all_stack (unsigned, idx, solver->analyzed))

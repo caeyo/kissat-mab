@@ -39,6 +39,7 @@ kissat *kissat_init (void) {
   solver->watching = true;
   solver->conflict.size = 2;
   solver->scinc = 1.0;
+  solver->estimator.pseudo = solver->scinc;
   solver->first_reducible = INVALID_REF;
   solver->last_irredundant = INVALID_REF;
   kissat_reset_last_learned (solver);
@@ -263,6 +264,12 @@ void kissat_print_statistics (kissat *solver) {
 #endif
   kissat_section (solver, "glue usage");
   kissat_print_glue_usage (solver);
+  kissat_section (solver, "estimator");
+  kissat_print_estimator_statistics (solver);
+#ifndef HEAPARGMAX
+  kissat_section (solver, "policy");
+  kissat_print_policy_statistics (solver);
+#endif
 #ifdef DECHASH
   kissat_section (solver, "decision hash");
   kissat_print_dechash (solver);

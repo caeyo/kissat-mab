@@ -135,6 +135,7 @@ struct kissat {
   policy policy;
 #endif
   double scinc;
+  estimator estimator;
 
   heap schedule;
   double scoreshift;

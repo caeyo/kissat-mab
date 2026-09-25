@@ -1,6 +1,27 @@
 #include "policy.h"
 #include "inlinepolicy.h"
 #include "logging.h"
+#include "print.h"
+
+#include <inttypes.h>
+
+void kissat_print_estimator_statistics (kissat *solver) {
+#ifndef QUIET
+  const estimator *const estimator = &solver->estimator;
+  kissat_message (solver, "estimator-bump-rounds %" PRIu64,
+                  estimator->rounds);
+  kissat_message (solver, "estimator-rescales %" PRIu64,
+                  estimator->rescales);
+  kissat_message (solver, "estimator-pseudo-activity %.17g",
+                  estimator->pseudo);
+  kissat_message (solver, "estimator-pseudo-zero-round %" PRIu64,
+                  estimator->zero.round);
+  kissat_message (solver, "estimator-pseudo-zero-rescale %" PRIu64,
+                  estimator->zero.rescale);
+#else
+  (void) solver;
+#endif
+}
 
 #ifdef HEAPARGMAX
 
@@ -52,9 +73,6 @@ void kissat_update_scores (kissat *solver) {
 #else
 
 #include "error.h"
-#include "print.h"
-
-#include <inttypes.h>
 
 // Argmax: the tree's maximum, removing assigned variables from the tree
 // on the way.  Each assigned variable is removed at most once per
@@ -92,47 +110,88 @@ static unsigned tree_argmax_pick (kissat *solver) {
   return res;
 }
 
+// Sample: draws from the tree's weights with the policy's generator, and
+// removes every assigned variable a draw meets and draws again.  Once no
+// leaf with a positive weight is left, every unassigned variable has score
+// zero, and the pick falls back to Argmax's choice.
+
+static unsigned tree_sample_pick (kissat *solver) {
+  policy *const policy = &solver->policy;
+  tree *const tree = &policy->tree;
+  const value *const values = solver->values;
+  assert (tree->weighted);
+  while (kissat_tree_has_weight (tree)) {
+    const unsigned res = kissat_tree_draw (tree, &policy->random);
+    assert (kissat_tree_contains (tree, res));
+    if (!values[LIT (res)]) {
+      LOG ("sampled unassigned %s score %g", LOGVAR (res),
+           kissat_tree_key (tree, res));
+#ifdef CHECK_HEAP
+      assert (kissat_tree_weight (tree, res).mantissa > 0);
+#endif
+      return res;
+    }
+    kissat_tree_remove (tree, res);
+  }
+  if (!(policy->count.fallbacks[0] | policy->count.fallbacks[1]))
+    policy->count.first = solver->estimator.rounds;
+  policy->count.fallbacks[solver->warming]++;
+  LOG ("no positive weight left: falling back to the maximum");
+#ifdef CHECK_HEAP
+  for (all_variables (idx))
+    if (ACTIVE (idx) && !VALUE (LIT (idx)))
+      assert (!kissat_get_score (solver, idx));
+#endif
+  return tree_argmax_pick (solver);
+}
+
 #ifdef SHADOW
 
 static void shadow_check_tree (kissat *);
 
-// HeapArgmax's pick on the shadow heap must find the largest score the
-// tree finds.  The two may pick different variables of that score, since
-// the heap breaks ties by its history and the tree by variable index.
+// Under Argmax, HeapArgmax's pick on the shadow heap must find the largest
+// score the tree finds.  The two may pick different variables of that
+// score, since the heap breaks ties by its history and the tree by
+// variable index.  Under Sample the pick is not the maximum, and only the
+// complete checks run.
 
 static void shadow_pick (kissat *solver, unsigned res) {
   policy *const policy = &solver->policy;
-  heap *const scores = SCORES;
-  const value *const values = solver->values;
   const uint64_t pick = ++policy->shadow.picks;
-  if (kissat_empty_heap (scores))
-    kissat_fatal ("shadow mode: heap empty at pick %" PRIu64, pick);
-  unsigned top = kissat_max_heap (scores);
-  while (values[LIT (top)]) {
-    kissat_pop_max_heap (solver, scores);
+  if (!policy->tree.weighted) {
+    heap *const scores = SCORES;
+    const value *const values = solver->values;
+    policy->shadow.compared++;
     if (kissat_empty_heap (scores))
       kissat_fatal ("shadow mode: heap empty at pick %" PRIu64, pick);
-    top = kissat_max_heap (scores);
+    unsigned top = kissat_max_heap (scores);
+    while (values[LIT (top)]) {
+      kissat_pop_max_heap (solver, scores);
+      if (kissat_empty_heap (scores))
+        kissat_fatal ("shadow mode: heap empty at pick %" PRIu64, pick);
+      top = kissat_max_heap (scores);
+    }
+    const double heap_score = kissat_get_heap_score (scores, top);
+    const double tree_score = kissat_tree_max_key (&policy->tree);
+    if (!kissat_same_double (heap_score, tree_score))
+      kissat_fatal ("shadow mode: pick %" PRIu64 ": largest score on the "
+                    "heap %.17g (variable %u) differs from the largest in "
+                    "the tree %.17g (variable %u)",
+                    pick, heap_score, top, tree_score, res);
+    if (!kissat_same_double (tree_score, solver->score[res]))
+      kissat_fatal ("shadow mode: pick %" PRIu64 ": tree maximum %.17g "
+                    "differs from the score %.17g of its variable %u",
+                    pick, tree_score, solver->score[res], res);
+    if (top != res)
+      policy->shadow.differ++;
   }
-  const double heap_score = kissat_get_heap_score (scores, top);
-  const double tree_score = kissat_tree_max_key (&policy->tree);
-  if (!kissat_same_double (heap_score, tree_score))
-    kissat_fatal ("shadow mode: pick %" PRIu64 ": largest score on the "
-                  "heap %.17g (variable %u) differs from the largest in "
-                  "the tree %.17g (variable %u)",
-                  pick, heap_score, top, tree_score, res);
-  if (!kissat_same_double (tree_score, solver->score[res]))
-    kissat_fatal ("shadow mode: pick %" PRIu64 ": tree maximum %.17g "
-                  "differs from the score %.17g of its variable %u",
-                  pick, tree_score, solver->score[res], res);
-  if (top != res)
-    policy->shadow.differ++;
   if (!(pick % 1000))
     shadow_check_tree (solver);
 }
 
 // Every leaf against the estimator, the heap and the assignment; every
-// internal node against its children.
+// internal node against its children.  In a weighted tree every leaf's
+// weight must be the one its score gives, and an absent leaf's zero.
 
 static void shadow_check_tree (kissat *solver) {
   policy *const policy = &solver->policy;
@@ -170,6 +229,17 @@ static void shadow_check_tree (kissat *solver) {
         kissat_fatal ("shadow mode: pick %" PRIu64 ": leaf key %.17g of "
                       "variable %u differs from its score %.17g",
                       pick, k, idx, s);
+      if (tree->weighted) {
+        const tree_weight w = kissat_tree_weight (tree, idx);
+        const tree_weight e = kissat_tree_weight_of_log2 (
+            kissat_policy_log2_weight (policy, s));
+        if (!kissat_tree_same_weight (w, e))
+          kissat_fatal ("shadow mode: pick %" PRIu64 ": leaf weight "
+                        "%.17g * 2^%d of variable %u differs from "
+                        "%.17g * 2^%d given by its score %.17g",
+                        pick, w.mantissa, w.exponent, idx, e.mantissa,
+                        e.exponent, s);
+      }
     } else if (available)
       kissat_fatal ("shadow mode: pick %" PRIu64 ": unassigned active "
                     "variable %u missing from the tree",
@@ -179,11 +249,18 @@ static void shadow_check_tree (kissat *solver) {
                     "variable %u missing from the heap",
                     pick, idx);
   }
-  for (unsigned idx = VARS; idx < leaves; idx++)
-    if (kissat_tree_contains (tree, idx))
+  for (unsigned idx = 0; idx < leaves; idx++) {
+    const bool present = kissat_tree_contains (tree, idx);
+    if (idx >= VARS && present)
       kissat_fatal ("shadow mode: pick %" PRIu64 ": leaf %u beyond the "
                     "%u variables present",
                     pick, idx, VARS);
+    if (tree->weighted && !present &&
+        kissat_tree_weight (tree, idx).mantissa)
+      kissat_fatal ("shadow mode: pick %" PRIu64 ": absent leaf %u with "
+                    "a positive weight",
+                    pick, idx);
+  }
   const unsigned node = kissat_tree_inconsistent_node (tree);
   if (node)
     kissat_fatal ("shadow mode: pick %" PRIu64 ": tree node %u differs "
@@ -195,6 +272,8 @@ void kissat_print_shadow_statistics (kissat *solver) {
 #ifndef QUIET
   const policy *const policy = &solver->policy;
   kissat_message (solver, "shadow-picks %" PRIu64, policy->shadow.picks);
+  kissat_message (solver, "shadow-compared %" PRIu64,
+                  policy->shadow.compared);
   kissat_message (solver, "shadow-differ %" PRIu64, policy->shadow.differ);
   kissat_message (solver, "shadow-checks %" PRIu64, policy->shadow.checks);
   kissat_message (solver, "shadow-rebuilds %" PRIu64,
@@ -209,8 +288,11 @@ void kissat_print_shadow_statistics (kissat *solver) {
 unsigned kissat_policy_pick (kissat *solver) {
   assert (solver->stable);
   assert (solver->unassigned);
-  assert (!solver->policy.bulk);
-  const unsigned res = tree_argmax_pick (solver);
+  policy *const policy = &solver->policy;
+  assert (!policy->bulk);
+  policy->count.picks[solver->warming]++;
+  const unsigned res = policy->tree.weighted ? tree_sample_pick (solver)
+                                             : tree_argmax_pick (solver);
 #ifdef SHADOW
   shadow_pick (solver, res);
 #endif
@@ -244,33 +326,62 @@ void kissat_update_scores (kissat *solver) {
   bool added = false;
   for (all_variables (idx))
     if (ACTIVE (idx) && !kissat_tree_contains (tree, idx)) {
-      kissat_tree_put (tree, idx, solver->score[idx], 0);
+      kissat_policy_put_leaf (solver, idx);
       added = true;
     }
   if (added)
     kissat_rebuild_policy (solver);
 }
 
-// Present leaves take their keys from the estimator again, then every
-// internal node is recomputed.
+// Present leaves take their keys and weights from the estimator again,
+// then every internal node is recomputed.
 
 void kissat_rebuild_policy (kissat *solver) {
   tree *const tree = &solver->policy.tree;
-  const double *const score = solver->score;
   LOG ("rebuilding policy tree");
   for (all_variables (idx))
     if (kissat_tree_contains (tree, idx))
-      kissat_tree_put (tree, idx, score[idx], 0);
+      kissat_policy_put_leaf (solver, idx);
   kissat_rebuild_tree (tree);
 #ifdef SHADOW
   solver->policy.shadow.rebuilds++;
 #endif
 }
 
-void kissat_seed_policy (kissat *solver) {
+// Seeds the generator and fixes the policy.  Sample weighs the tree, which
+// at this point may already hold variables ('kissat_update_scores' with
+// '--stable=2').
+
+void kissat_start_policy (kissat *solver) {
+  policy *const policy = &solver->policy;
   const unsigned seed = GET_OPTION (policyseed);
-  solver->policy.random = kissat_policy_generator (seed);
+  policy->random = kissat_policy_generator (seed);
   LOG ("initialized policy random number generator with seed %u", seed);
+  if (!GET_OPTION (softmax) || policy->tree.weighted)
+    return;
+  policy->etalog2 = GET_OPTION (etalog2);
+  kissat_weigh_tree (solver, &policy->tree);
+  kissat_rebuild_policy (solver);
+  kissat_very_verbose (solver, "sampling decisions at eta 2^%d",
+                       policy->etalog2);
+}
+
+void kissat_print_policy_statistics (kissat *solver) {
+#ifndef QUIET
+  const policy *const policy = &solver->policy;
+  kissat_message (solver, "policy-picks %" PRIu64, policy->count.picks[0]);
+  kissat_message (solver, "policy-fallbacks %" PRIu64,
+                  policy->count.fallbacks[0]);
+  kissat_message (solver, "policy-warmup-picks %" PRIu64,
+                  policy->count.picks[1]);
+  kissat_message (solver, "policy-warmup-fallbacks %" PRIu64,
+                  policy->count.fallbacks[1]);
+  if (policy->count.fallbacks[0] | policy->count.fallbacks[1])
+    kissat_message (solver, "policy-first-fallback-round %" PRIu64,
+                    policy->count.first);
+#else
+  (void) solver;
+#endif
 }
 
 #endif
