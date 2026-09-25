@@ -4,6 +4,10 @@
 #include "policy.h"
 #include "print.h"
 
+#ifndef HEAPARGMAX
+#include "inlinepolicy.h"
+#endif
+
 #include <inttypes.h>
 
 static unsigned last_enqueued_unassigned_variable (kissat *solver) {
@@ -102,7 +106,15 @@ unsigned kissat_next_decision_variable (kissat *solver) {
 #ifdef LOGGING
   const char *type = 0;
 #endif
+#ifndef HEAPARGMAX
+  // Tree builds time every stable-mode decision (see 'policy.h').
+  const bool stable = solver->stable;
+  const uint64_t start = stable ? kissat_policy_clock () : 0;
+#endif
   unsigned res = next_random_decision (solver);
+#ifndef HEAPARGMAX
+  const bool random = res != INVALID_IDX;
+#endif
   if (res == INVALID_IDX) {
     if (solver->stable) {
 #ifdef LOGGING
@@ -124,6 +136,10 @@ unsigned kissat_next_decision_variable (kissat *solver) {
     INC (random_decisions);
   }
   LOG ("next %s decision %s", type, LOGVAR (res));
+#ifndef HEAPARGMAX
+  if (stable)
+    kissat_policy_decided (solver, res, random, start);
+#endif
   return res;
 }
 

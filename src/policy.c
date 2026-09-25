@@ -2,6 +2,7 @@
 #include "inlinepolicy.h"
 #include "logging.h"
 #include "print.h"
+#include "resources.h"
 
 #include <inttypes.h>
 
@@ -360,12 +361,115 @@ void kissat_rebuild_policy (kissat *solver) {
 #endif
 }
 
+// Decision metrics (see 'policy.h').  A sample is one pass over the
+// variables at a decision of 'idx', due for a sample, which finds Argmax's
+// choice among the unassigned active variables (the largest score, the
+// smallest index among ties) and the distribution the decision was drawn
+// from.  Sample's weights enter relative to the largest one seen so far,
+// as 2^(l - top) with 'l' a weight's base-2 logarithm: 'sum' adds them and
+// 'moment' adds each times 'l - top', both rescaled whenever 'top' grows.
+// The softmax's entropy is then ln (sum) - ln (2) * moment / sum, the
+// variable of largest weight has probability 1 / sum, and the 'ties'
+// variables of the largest score, which share that weight, 'ties / sum'.
+
+void kissat_sample_decision (kissat *solver, unsigned idx, bool random) {
+  policy *const policy = &solver->policy;
+  policy_metrics *const metrics = policy->metrics + solver->warming;
+  const uint64_t start = kissat_policy_clock ();
+  const bool softmax = !random && policy->tree.weighted;
+  const flags *const flags = solver->flags;
+  const value *const values = solver->values;
+  const double *const score = solver->score;
+  unsigned arms = 0, ties = 0, argmax = INVALID_IDX;
+  double largest = -1, top = 0, sum = 0, moment = 0;
+  for (all_variables (other)) {
+    if (!flags[other].active || values[LIT (other)])
+      continue;
+    arms++;
+    const double s = score[other];
+    if (s > largest)
+      largest = s, argmax = other, ties = 1;
+    else if (s == largest)
+      ties++;
+    if (!softmax)
+      continue;
+    const double l = kissat_policy_log2_weight (policy, s);
+    if (l == -INFINITY)
+      continue;
+    if (!sum)
+      top = l, sum = 1;
+    else if (l > top) {
+      const double d = top - l, f = exp2 (d);
+      moment = f * (moment + d * sum);
+      sum = f * sum + 1;
+      top = l;
+    } else {
+      const double d = l - top, f = exp2 (d);
+      sum += f;
+      moment += f * d;
+    }
+  }
+  assert (arms == solver->unassigned);
+  assert (argmax != INVALID_IDX);
+  assert (ACTIVE (idx) && !VALUE (LIT (idx)));
+  // Argmax's distribution, and Sample's at a fallback (no positive weight
+  // left), put all mass on Argmax's choice, and the decision is that.
+  double entropy = 0, differ = 0, lower = 0;
+  if (random) {
+    entropy = log (arms);
+    differ = 1 - 1.0 / arms;
+    lower = 1 - (double) ties / arms;
+  } else if (softmax && sum) {
+    const double ln2 = 0.69314718055994530942;
+    entropy = log (sum) - ln2 * moment / sum;
+    differ = 1 - 1 / sum;
+    lower = 1 - ties / sum;
+  } else
+    assert (idx == argmax);
+  if (entropy < 0) // rounding
+    entropy = 0;
+  const double effective = exp (entropy);
+  LOG ("sampled decision %s: %u unassigned, %g effective arms", LOGVAR (idx),
+       arms, effective);
+  metrics->samples++;
+  metrics->arms += arms;
+  metrics->entropy += entropy;
+  metrics->effective += effective;
+  metrics->share += effective / arms;
+  metrics->differ += differ;
+  metrics->lower += lower;
+  metrics->differed += idx != argmax;
+  metrics->lowered += score[idx] < largest;
+  const uint64_t stop = kissat_policy_clock ();
+  if (stop > start)
+    policy->clock.ticks += stop - start;
+}
+
+#ifndef QUIET
+
+// Clock ticks per second, measured against the wall clock since the start
+// of the search; zero if the search has not started.
+
+static double policy_clock_rate (kissat *solver) {
+  const policy *const policy = &solver->policy;
+  if (!policy->clock.started)
+    return 0;
+  const double seconds = kissat_wall_clock_time () - policy->clock.started;
+  if (seconds <= 0)
+    return 0;
+  return (kissat_policy_clock () - policy->clock.start) / seconds;
+}
+
+#endif
+
 // Seeds the generator and fixes the policy.  Sample weighs the tree, which
 // at this point may already hold variables ('kissat_update_scores' with
-// '--stable=2').
+// '--stable=2').  The clock of the decision metrics starts here.
 
 void kissat_start_policy (kissat *solver) {
   policy *const policy = &solver->policy;
+  policy->clock.start = kissat_policy_clock ();
+  policy->clock.started = kissat_wall_clock_time ();
   const unsigned seed = GET_OPTION (policyseed);
   policy->random = kissat_policy_generator (seed);
   LOG ("initialized policy random number generator with seed %u", seed);
@@ -394,6 +498,36 @@ void kissat_print_policy_statistics (kissat *solver) {
   if (policy->count.fallbacks[0] | policy->count.fallbacks[1])
     kissat_message (solver, "policy-first-fallback-round %" PRIu64,
                     policy->count.first);
+  // Decision metrics: means per decision and per sample.
+  const double hz = policy_clock_rate (solver);
+  kissat_message (solver, "policy-random-decisions %" PRIu64,
+                  policy->metrics[0].random);
+  for (unsigned warming = 0; warming < 2; warming++) {
+    const policy_metrics *const m = policy->metrics + warming;
+    const char *const phase = warming ? "policy-warmup" : "policy";
+    const double n = m->samples;
+    kissat_message (solver, "%s-decision-ns %.9g", phase,
+                    hz && m->decisions ? 1e9 * m->ticks / hz / m->decisions
+                                       : 0);
+    kissat_message (solver, "%s-samples %" PRIu64, phase, m->samples);
+    kissat_message (solver, "%s-unassigned %.9g", phase,
+                    n ? m->arms / n : 0);
+    kissat_message (solver, "%s-effective-arms %.9g", phase,
+                    n ? m->effective / n : 0);
+    kissat_message (solver, "%s-effective-arms-geomean %.9g", phase,
+                    n ? exp (m->entropy / n) : 0);
+    kissat_message (solver, "%s-effective-share %.9g", phase,
+                    n ? m->share / n : 0);
+    kissat_message (solver, "%s-differ %.9g", phase, n ? m->differ / n : 0);
+    kissat_message (solver, "%s-differ-observed %" PRIu64, phase,
+                    m->differed);
+    kissat_message (solver, "%s-lower %.9g", phase, n ? m->lower / n : 0);
+    kissat_message (solver, "%s-lower-observed %" PRIu64, phase,
+                    m->lowered);
+  }
+  kissat_message (solver, "policy-metrics-seconds %.9g",
+                  hz ? policy->clock.ticks / hz : 0);
+  kissat_message (solver, "policy-clock-hz %.9g", hz);
 #else
   (void) solver;
 #endif

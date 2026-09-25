@@ -270,6 +270,32 @@ static inline void kissat_end_bulk_score_change (kissat *solver) {
   kissat_rebuild_policy (solver);
 }
 
+// A stable-mode decision chose 'idx', a random decision of a burst if
+// 'random' and a pick of the policy otherwise, and choosing it began when
+// the clock read 'start'.  Counts and times the decision and has every
+// 'metricsint'-th one of its phase sampled, with 'metricsvars' every
+// 'VARS'-th if there are more variables (see 'policy.h').
+
+static inline void kissat_policy_decided (kissat *solver, unsigned idx,
+                                          bool random, uint64_t start) {
+  assert (solver->stable);
+  policy_metrics *const metrics = solver->policy.metrics + solver->warming;
+  const uint64_t stop = kissat_policy_clock ();
+  if (stop > start) // time-stamp counters of cores out of step
+    metrics->ticks += stop - start;
+  metrics->decisions++;
+  metrics->random += random;
+  const unsigned interval = GET_OPTION (metricsint);
+  if (!interval)
+    return;
+  const unsigned spacing =
+      GET_OPTION (metricsvars) && VARS > interval ? VARS : interval;
+  if (++metrics->since < spacing)
+    return;
+  metrics->since = 0;
+  kissat_sample_decision (solver, idx, random);
+}
+
 #endif
 
 #endif

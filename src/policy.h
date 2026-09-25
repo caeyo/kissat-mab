@@ -16,8 +16,11 @@
 // 'kissat_policy_peek' returns the variable of largest score among the
 // unassigned active variables: the policy's argmax, which is the next
 // decision only under an argmax policy.  Nothing in Kissat 4.0.4 needs it
-// (its only reader of a score maximum, the rescale, reads the estimator);
-// it is for the decision metrics, the fallback and shadow mode.
+// (its only reader of a score maximum, the rescale, reads the estimator),
+// and it has no caller: the fallback and shadow mode take the tree's
+// maximum themselves, and the decision metrics find Argmax's choice with a
+// pass that only reads, since a peek removes assigned variables from the
+// tree and so would change Sample's later draws.
 //
 // The policy reads scores from the estimator and is told about every
 // change of availability of a variable; both halves of that interface are
@@ -53,6 +56,23 @@
 // at the start of the search, for the draws of Sample (Argmax draws
 // nothing); no other code draws from it, so the random streams of the rest
 // of the solver do not depend on the policy.
+//
+// Decision metrics (tree builds).  Every stable-mode decision, a pick of
+// the policy or a random decision of a burst ('randecstable'), is counted
+// and timed, in search and in warm-up apart: 'kissat_next_decision_variable'
+// reads the clock of 'kissat_policy_clock' (the time-stamp counter on x86)
+// before and after choosing the variable.  At every 'metricsint'-th
+// decision of a phase, and with 'metricsvars' at least as many decisions
+// apart as there are variables, so that the passes scan at most one
+// variable per decision, one pass over the variables samples the
+// distribution the decision was drawn from, over the unassigned active
+// variables: Argmax's, and Sample's at a fallback, puts all mass on
+// Argmax's choice (the variable of largest score and smallest index), a
+// burst's is uniform, and Sample's is the softmax of its weights.  A sample
+// adds the distribution's entropy, the probability it gives to a variable
+// other than Argmax's choice and to a score below the largest, and whether
+// the decision made was either.  The metrics only read the solver's state
+// and draw nothing, so no decision depends on them.
 //
 // HeapArgmax builds ('./configure --heap-argmax', '-DHEAPARGMAX'): the
 // variable of largest score on the binary heap 'SCORES', popping assigned
@@ -122,7 +142,31 @@ struct estimator {
 #include "random.h"
 #include "tree.h"
 
+#if !defined(__x86_64__) && !defined(__i386__)
+#include "resources.h"
+#endif
+
 typedef struct policy policy;
+typedef struct policy_metrics policy_metrics;
+
+// Decision metrics of one phase, search or warm-up (see above).  The sums
+// run over the samples.
+
+struct policy_metrics {
+  uint64_t decisions; // stable-mode decisions
+  uint64_t random;    // of which random decisions of bursts
+  uint64_t ticks;     // clock ticks spent choosing their variables
+  uint64_t since;     // decisions since the last sample
+  uint64_t samples;   // samples taken
+  uint64_t differed;  // samples whose decision was not Argmax's choice
+  uint64_t lowered;   // samples whose decision's score was below the top
+  double arms;        // sum of unassigned active variables
+  double entropy;     // sum of the entropies (nats)
+  double effective;   // sum of the effective numbers of arms exp (entropy)
+  double share;       // sum of effective arms / unassigned active variables
+  double differ;      // sum of probabilities of not Argmax's choice
+  double lower;       // sum of probabilities of a score below the top
+};
 
 struct policy {
   tree tree;        // the available variables, their scores and weights
@@ -135,6 +179,12 @@ struct policy {
     uint64_t fallbacks[2]; // Sample: picks that fell back to Argmax
     uint64_t first;        // bump round of the first fallback
   } count;
+  policy_metrics metrics[2]; // search [0] and warm-up [1]
+  struct {
+    uint64_t start; // clock at the start of the search
+    double started; // wall-clock time then, to calibrate the clock
+    uint64_t ticks; // clock ticks spent in the samples' passes
+  } clock;
 #ifdef SHADOW
   struct {
     uint64_t picks;    // picks
@@ -158,6 +208,18 @@ static inline generator kissat_policy_generator (unsigned seed) {
   return z ^ (z >> 31);
 }
 
+// The clock of the decision metrics: the time-stamp counter on x86, whose
+// rate the policy measures against the wall clock over the run, and
+// elsewhere the wall clock in nanoseconds (microsecond resolution).
+
+static inline uint64_t kissat_policy_clock (void) {
+#if defined(__x86_64__) || defined(__i386__)
+  return __builtin_ia32_rdtsc ();
+#else
+  return 1e9 * kissat_wall_clock_time ();
+#endif
+}
+
 #endif
 
 struct kissat;
@@ -174,6 +236,7 @@ void kissat_print_estimator_statistics (struct kissat *);
 #ifndef HEAPARGMAX
 void kissat_start_policy (struct kissat *);
 void kissat_rebuild_policy (struct kissat *);
+void kissat_sample_decision (struct kissat *, unsigned idx, bool random);
 void kissat_print_policy_statistics (struct kissat *);
 #ifdef SHADOW
 void kissat_print_shadow_statistics (struct kissat *);
