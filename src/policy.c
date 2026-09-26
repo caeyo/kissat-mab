@@ -158,6 +158,31 @@ static unsigned tree_sample_pick (kissat *solver) {
   return tree_argmax_pick (solver);
 }
 
+// Mixing: a variable drawn uniformly from the indicator tree with the
+// policy's generator, which removes every assigned variable a draw meets
+// and draws again.  Every unassigned active variable is in the indicator
+// tree, so the draws end.
+
+static unsigned uniform_pick (kissat *solver) {
+  policy *const policy = &solver->policy;
+  indicator *const uniform = &policy->uniform;
+  const value *const values = solver->values;
+  assert (uniform->enabled);
+#ifdef CHECK_HEAP
+  for (all_variables (idx))
+    if (ACTIVE (idx) && !VALUE (LIT (idx)))
+      assert (kissat_indicator_contains (uniform, idx));
+#endif
+  for (;;) {
+    const unsigned res = kissat_indicator_draw (uniform, &policy->random);
+    if (!values[LIT (res)]) {
+      LOG ("drew unassigned %s uniformly", LOGVAR (res));
+      return res;
+    }
+    kissat_indicator_remove (uniform, res);
+  }
+}
+
 #ifdef SHADOW
 
 static void shadow_check_tree (kissat *);
@@ -165,13 +190,13 @@ static void shadow_check_tree (kissat *);
 // Under Argmax, HeapArgmax's pick on the shadow heap must find the largest
 // score the tree finds.  The two may pick different variables of that
 // score, since the heap breaks ties by its history and the tree by
-// variable index.  Under Sample the pick is not the maximum, and only the
-// complete checks run.
+// variable index.  Under Sample the pick is not the maximum, nor is a
+// uniform pick of mixing ('uniform'), and only the complete checks run.
 
-static void shadow_pick (kissat *solver, unsigned res) {
+static void shadow_pick (kissat *solver, unsigned res, bool uniform) {
   policy *const policy = &solver->policy;
   const uint64_t pick = ++policy->shadow.picks;
-  if (!policy->tree.weighted) {
+  if (!policy->tree.weighted && !uniform) {
     heap *const scores = SCORES;
     const value *const values = solver->values;
     policy->shadow.compared++;
@@ -204,11 +229,14 @@ static void shadow_pick (kissat *solver, unsigned res) {
 
 // Every leaf against the estimator, the heap and the assignment; every
 // internal node against its children.  In a weighted tree every leaf's
-// weight must be the one its score gives, and an absent leaf's zero.
+// weight must be the one its score gives, and an absent leaf's zero.  With
+// mixing, the indicator tree holds only active variables and every
+// unassigned one, and every count is the sum of its children's.
 
 static void shadow_check_tree (kissat *solver) {
   policy *const policy = &solver->policy;
   const tree *const tree = &policy->tree;
+  const indicator *const uniform = &policy->uniform;
   heap *const scores = SCORES;
   const double *const score = solver->score;
   const flags *const flags = solver->flags;
@@ -223,6 +251,10 @@ static void shadow_check_tree (kissat *solver) {
     kissat_fatal ("shadow mode: check %" PRIu64 ": %u leaves for %u "
                   "variables",
                   check, leaves, VARS);
+  if (uniform->enabled && uniform->leaves < VARS)
+    kissat_fatal ("shadow mode: check %" PRIu64 ": %u indicator leaves "
+                  "for %u variables",
+                  check, uniform->leaves, VARS);
   for (all_variables (idx)) {
     const double s = score[idx];
     const double h = kissat_get_heap_score (scores, idx);
@@ -261,6 +293,17 @@ static void shadow_check_tree (kissat *solver) {
       kissat_fatal ("shadow mode: pick %" PRIu64 ": unassigned active "
                     "variable %u missing from the heap",
                     pick, idx);
+    if (!uniform->enabled)
+      continue;
+    if (kissat_indicator_contains (uniform, idx)) {
+      if (!active)
+        kissat_fatal ("shadow mode: pick %" PRIu64 ": inactive variable "
+                      "%u in the indicator tree",
+                      pick, idx);
+    } else if (available)
+      kissat_fatal ("shadow mode: pick %" PRIu64 ": unassigned active "
+                    "variable %u missing from the indicator tree",
+                    pick, idx);
   }
   for (unsigned idx = 0; idx < leaves; idx++) {
     const bool present = kissat_tree_contains (tree, idx);
@@ -279,6 +322,18 @@ static void shadow_check_tree (kissat *solver) {
     kissat_fatal ("shadow mode: pick %" PRIu64 ": tree node %u differs "
                   "from what its children give",
                   pick, node);
+  if (!uniform->enabled)
+    return;
+  for (unsigned idx = VARS; idx < uniform->leaves; idx++)
+    if (kissat_indicator_contains (uniform, idx))
+      kissat_fatal ("shadow mode: pick %" PRIu64 ": indicator leaf %u "
+                    "beyond the %u variables present",
+                    pick, idx, VARS);
+  const unsigned count = kissat_indicator_inconsistent_node (uniform);
+  if (count)
+    kissat_fatal ("shadow mode: pick %" PRIu64 ": indicator node %u "
+                  "differs from what its children give",
+                  pick, count);
 }
 
 void kissat_print_shadow_statistics (kissat *solver) {
@@ -298,16 +353,28 @@ void kissat_print_shadow_statistics (kissat *solver) {
 
 #endif
 
+// With mixing, a coin decides between a uniform pick (heads) and the pick
+// of Argmax or Sample; without, no coin is tossed.
+
 unsigned kissat_policy_pick (kissat *solver) {
   assert (solver->stable);
   assert (solver->unassigned);
   policy *const policy = &solver->policy;
   assert (!policy->bulk);
-  policy->count.picks[solver->warming]++;
-  const unsigned res = policy->tree.weighted ? tree_sample_pick (solver)
-                                             : tree_argmax_pick (solver);
+  const bool warming = solver->warming;
+  policy->count.picks[warming]++;
+  const double gamma = policy->gamma;
+  const bool uniform =
+      gamma > 0 && kissat_policy_coin (&policy->random, gamma);
+  unsigned res;
+  if (uniform) {
+    policy->count.uniform[warming]++;
+    res = uniform_pick (solver);
+  } else
+    res = policy->tree.weighted ? tree_sample_pick (solver)
+                                : tree_argmax_pick (solver);
 #ifdef SHADOW
-  shadow_pick (solver, res);
+  shadow_pick (solver, res, uniform);
 #endif
   assert (ACTIVE (res));
   assert (!VALUE (LIT (res)));
@@ -324,8 +391,9 @@ unsigned kissat_policy_peek (kissat *solver) {
   return res;
 }
 
-// Every active variable becomes available.  The heap's order of pushes
-// does not matter to the tree, which is a function of its leaves.
+// Every active variable becomes available, in the tree and, with mixing,
+// in the indicator tree.  The heap's order of pushes does not matter to
+// the trees, which are functions of their leaves.
 
 void kissat_update_scores (kissat *solver) {
   assert (solver->stable);
@@ -344,6 +412,24 @@ void kissat_update_scores (kissat *solver) {
     }
   if (added)
     kissat_rebuild_policy (solver);
+  indicator *const uniform = &solver->policy.uniform;
+  if (!uniform->enabled)
+    return;
+  added = false;
+  for (all_variables (idx))
+    if (ACTIVE (idx) && !kissat_indicator_contains (uniform, idx)) {
+      kissat_indicator_put (uniform, idx, true);
+      added = true;
+    }
+  if (added)
+    kissat_rebuild_indicator (uniform);
+}
+
+// Frees the tree and the indicator tree.
+
+void kissat_release_policy (kissat *solver) {
+  kissat_release_tree (solver, &solver->policy.tree);
+  kissat_release_indicator (solver, &solver->policy.uniform);
 }
 
 // Present leaves take their keys and weights from the estimator again,
@@ -373,6 +459,30 @@ void kissat_rebuild_policy (kissat *solver) {
 // The softmax's entropy is then ln (sum) - ln (2) * moment / sum, the
 // variable of largest weight has probability 1 / sum, and the 'ties'
 // variables of the largest score, which share that weight, 'ties / sum'.
+//
+// With mixing, a pick's distribution gives every unassigned variable 'v'
+// the probability (1 - gamma) p (v) + gamma / arms, where 'p' is the
+// softmax, or all mass on Argmax's choice for Argmax and at a fallback.
+// For the softmax its entropy needs 'top' and 'sum', hence a second pass.
+
+static double mixed_softmax_entropy (kissat *solver, double top,
+                                     double scale, double uniform) {
+  const policy *const policy = &solver->policy;
+  const flags *const flags = solver->flags;
+  const value *const values = solver->values;
+  const double *const score = solver->score;
+  double res = 0;
+  for (all_variables (idx)) {
+    if (!flags[idx].active || values[LIT (idx)])
+      continue;
+    const double l = kissat_policy_log2_weight (policy, score[idx]);
+    double p = uniform;
+    if (l != -INFINITY)
+      p += scale * exp2 (l - top);
+    res -= p * log (p);
+  }
+  return res;
+}
 
 void kissat_sample_decision (kissat *solver, unsigned idx, bool random) {
   policy *const policy = &solver->policy;
@@ -415,17 +525,32 @@ void kissat_sample_decision (kissat *solver, unsigned idx, bool random) {
   assert (argmax != INVALID_IDX);
   assert (ACTIVE (idx) && !VALUE (LIT (idx)));
   // Argmax's distribution, and Sample's at a fallback (no positive weight
-  // left), put all mass on Argmax's choice, and the decision is that.
+  // left), put all mass on Argmax's choice, and without mixing the
+  // decision is that.  With mixing, 'top_p' is the probability of Argmax's
+  // choice, which under Sample every variable of the largest score shares,
+  // while under Argmax and at a fallback the other ones have 'uniform'.
+  const double gamma = random ? 0 : policy->gamma;
   double entropy = 0, differ = 0, lower = 0;
   if (random) {
     entropy = log (arms);
     differ = 1 - 1.0 / arms;
     lower = 1 - (double) ties / arms;
-  } else if (softmax && sum) {
+  } else if (softmax && sum && !gamma) {
     const double ln2 = 0.69314718055994530942;
     entropy = log (sum) - ln2 * moment / sum;
     differ = 1 - 1 / sum;
     lower = 1 - ties / sum;
+  } else if (softmax && sum) {
+    const double uniform = gamma / arms, scale = (1 - gamma) / sum;
+    const double top_p = scale + uniform;
+    entropy = mixed_softmax_entropy (solver, top, scale, uniform);
+    differ = 1 - top_p;
+    lower = 1 - ties * top_p;
+  } else if (gamma) {
+    const double uniform = gamma / arms, top_p = 1 - gamma + uniform;
+    entropy = -top_p * log (top_p) - (arms - 1) * uniform * log (uniform);
+    differ = 1 - top_p;
+    lower = gamma * (arms - ties) / arms;
   } else
     assert (idx == argmax);
   if (entropy < 0) // rounding
@@ -466,6 +591,24 @@ static double policy_clock_rate (kissat *solver) {
 
 #endif
 
+// Mixing: the indicator tree starts with the variables in the tree, i.e.
+// every active variable if the search starts in stable mode and none
+// otherwise, until the first switch to stable mode fills both.
+
+static void start_mixing (kissat *solver, unsigned gammappm) {
+  policy *const policy = &solver->policy;
+  const tree *const tree = &policy->tree;
+  indicator *const uniform = &policy->uniform;
+  policy->gamma = kissat_policy_gamma (gammappm);
+  kissat_enable_indicator (solver, uniform, solver->size);
+  for (all_variables (idx))
+    if (kissat_tree_contains (tree, idx))
+      kissat_indicator_put (uniform, idx, true);
+  kissat_rebuild_indicator (uniform);
+  kissat_very_verbose (solver, "mixing uniform decisions at gamma %g",
+                       policy->gamma);
+}
+
 // Seeds the generator and fixes the policy.  Sample weighs the tree, which
 // at this point may already hold variables ('kissat_update_scores' with
 // '--stable=2').  The clock of the decision metrics starts here.
@@ -481,6 +624,9 @@ void kissat_start_policy (kissat *solver) {
   LOG ("initialized policy random number generator with seed %u", seed);
   if (kissat_chb (solver))
     kissat_very_verbose (solver, "CHB scores in stable mode");
+  const unsigned gammappm = GET_OPTION (gammappm);
+  if (gammappm && !policy->uniform.enabled)
+    start_mixing (solver, gammappm);
   if (!GET_OPTION (softmax) || policy->tree.weighted)
     return;
   policy->chb = kissat_chb (solver);
@@ -501,6 +647,10 @@ void kissat_print_policy_statistics (kissat *solver) {
                   policy->count.picks[1]);
   kissat_message (solver, "policy-warmup-fallbacks %" PRIu64,
                   policy->count.fallbacks[1]);
+  kissat_message (solver, "policy-uniform-picks %" PRIu64,
+                  policy->count.uniform[0]);
+  kissat_message (solver, "policy-warmup-uniform-picks %" PRIu64,
+                  policy->count.uniform[1]);
   if (policy->count.fallbacks[0] | policy->count.fallbacks[1])
     kissat_message (solver, "policy-first-fallback-round %" PRIu64,
                     policy->count.first);

@@ -212,35 +212,44 @@ static void compact_scores (kissat *solver, heap *old_scores,
 
 #ifndef HEAPARGMAX
 
-// Moves every score, last conflict (CHB) and leaf of the policy tree to
-// the variable's new index, as 'compact_scores' does for the heap.
-// Indices only decrease and the loop goes up, so nothing is overwritten
-// before it is moved.  Leaves of the variables that disappear are absent
-// (they are inactive), and leaves beyond the new number of variables are
-// made absent.
+// Moves every score, last conflict (CHB) and leaf of the policy tree, and
+// with mixing of the indicator tree, to the variable's new index, as
+// 'compact_scores' does for the heap.  Indices only decrease and the loop
+// goes up, so nothing is overwritten before it is moved.  Leaves of the
+// variables that disappear are absent (they are inactive), and leaves
+// beyond the new number of variables are made absent.
 
 static void compact_policy (kissat *solver, unsigned vars) {
   LOG ("compacting scores and policy tree");
   double *const score = solver->score;
   uint64_t *const last_conflict = solver->last_conflict;
   tree *const tree = &solver->policy.tree;
+  indicator *const uniform = &solver->policy.uniform;
+  const bool mixing = uniform->enabled;
   for (all_variables (idx)) {
     const unsigned midx = map_idx (solver, idx);
     if (midx == INVALID_IDX) {
       assert (!kissat_tree_contains (tree, idx));
+      assert (!mixing || !kissat_indicator_contains (uniform, idx));
       continue;
     }
     assert (midx <= idx);
     score[midx] = score[idx];
     last_conflict[midx] = last_conflict[idx];
     kissat_tree_move (tree, idx, midx);
+    if (mixing)
+      kissat_indicator_move (uniform, idx, midx);
   }
   for (unsigned idx = vars; idx < VARS; idx++) {
     score[idx] = 0;
     last_conflict[idx] = 0;
     kissat_tree_put (tree, idx, TREE_ABSENT, -INFINITY);
+    if (mixing)
+      kissat_indicator_put (uniform, idx, false);
   }
   kissat_rebuild_tree (tree);
+  if (mixing)
+    kissat_rebuild_indicator (uniform);
 }
 
 #endif

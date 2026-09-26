@@ -26,6 +26,23 @@ static kissat *new_solver (unsigned vars, bool softmax, int etalog2,
   return solver;
 }
 
+// The same with mixing at gamma = gammappm / 10^6.
+
+static kissat *new_mixing_solver (unsigned vars, bool softmax, int etalog2,
+                                  unsigned gammappm) {
+  kissat *solver = kissat_init ();
+  kissat_set_option (solver, "softmax", softmax);
+  kissat_set_option (solver, "etalog2", etalog2);
+  kissat_set_option (solver, "gammappm", gammappm);
+  for (unsigned i = 1; i <= vars; i++)
+    kissat_add (solver, (int) i);
+  kissat_add (solver, 0);
+  solver->stable = true;
+  kissat_update_scores (solver);
+  kissat_start_policy (solver);
+  return solver;
+}
+
 static void assign (kissat *solver, unsigned idx) {
   const unsigned lit = LIT (idx);
   solver->values[lit] = 1;
@@ -107,6 +124,128 @@ static void test_policy_fallback (void) {
     assign (solver, idx);
   assert (kissat_policy_pick (solver) == 0);
   assert (!solver->policy.count.fallbacks[0]);
+  kissat_release (solver);
+}
+
+// Mixing keeps the indicator tree only with 'gammappm' positive, and it
+// starts with the variables of the policy's tree.
+
+static void test_policy_mixing_start (void) {
+  kissat *solver = new_solver (5, true, 0, true);
+  assert (!solver->policy.uniform.enabled);
+  assert (!solver->policy.gamma);
+  kissat_release (solver);
+  solver = new_mixing_solver (5, false, 0, 250000);
+  const policy *const policy = &solver->policy;
+  const indicator *const uniform = &policy->uniform;
+  assert (policy->gamma == 0.25);
+  assert (uniform->enabled);
+  assert (uniform->leaves == policy->tree.leaves);
+  assert (kissat_indicator_total (uniform) == 5);
+  for (unsigned idx = 0; idx < uniform->leaves; idx++)
+    assert (kissat_indicator_contains (uniform, idx) ==
+            kissat_tree_contains (&policy->tree, idx));
+  assert (!kissat_indicator_inconsistent_node (uniform));
+  kissat_release (solver);
+}
+
+// Without mixing no coin is tossed: Argmax leaves the policy's generator
+// alone, and Sample's pick is the first draw from its tree.
+
+static void test_policy_mixing_none (void) {
+  kissat *solver = new_solver (10, false, 0, true);
+  const generator random = solver->policy.random;
+  for (unsigned i = 0; i < 100; i++)
+    (void) kissat_policy_pick (solver);
+  assert (solver->policy.random == random);
+  kissat_release (solver);
+  solver = new_solver (10, true, 0, true);
+  for (unsigned i = 0; i < 100; i++) {
+    generator copy = solver->policy.random;
+    const unsigned expected =
+        kissat_tree_draw (&solver->policy.tree, &copy);
+    assert (kissat_policy_pick (solver) == expected);
+    assert (solver->policy.random == copy);
+  }
+  assert (!solver->policy.count.uniform[0]);
+  kissat_release (solver);
+}
+
+// At gamma = 1 every pick is uniform: never an assigned variable, about
+// equally often each unassigned one.  The draws remove the assigned
+// variables they meet from the indicator tree only, and backtracking puts
+// them back.
+
+static void test_policy_mixing_uniform (void) {
+  kissat *solver = new_mixing_solver (20, false, 0, 1000000);
+  const policy *const policy = &solver->policy;
+  const indicator *const uniform = &policy->uniform;
+  for (unsigned idx = 0; idx < 20; idx += 2)
+    assign (solver, idx);
+  unsigned counts[20] = {0};
+  const unsigned picks = 20000;
+  for (unsigned i = 0; i < picks; i++)
+    counts[kissat_policy_pick (solver)]++;
+  assert (policy->count.uniform[0] == picks);
+  assert (policy->count.picks[0] == picks);
+  for (unsigned idx = 0; idx < 20; idx++)
+    if (idx % 2)
+      assert (abs ((int) counts[idx] - (int) (picks / 10)) < 200);
+    else
+      assert (!counts[idx]);
+  for (unsigned idx = 0; idx < 20; idx++) {
+    assert (kissat_tree_contains (&policy->tree, idx));
+    assert (kissat_indicator_contains (uniform, idx) == (idx % 2));
+  }
+  for (unsigned idx = 0; idx < 20; idx += 2)
+    unassign (solver, idx);
+  assert (kissat_indicator_total (uniform) == 20);
+  assert (!kissat_indicator_inconsistent_node (uniform));
+  kissat_release (solver);
+}
+
+// Under Argmax at gamma = 1/4: a quarter of the picks are uniform, and
+// every other pick is Argmax's choice.
+
+static void test_policy_mixing_argmax (void) {
+  kissat *solver = new_mixing_solver (8, false, 0, 250000);
+  const policy *const policy = &solver->policy;
+  for (unsigned idx = 0; idx < 8; idx++)
+    kissat_update_score (solver, idx, idx == 5 ? 10 : 1 + idx);
+  assign (solver, 2);
+  const unsigned picks = 20000;
+  unsigned counts[8] = {0};
+  for (unsigned i = 0; i < picks; i++) {
+    const uint64_t before = policy->count.uniform[0];
+    const unsigned idx = kissat_policy_pick (solver);
+    assert (idx != 2);
+    if (policy->count.uniform[0] == before)
+      assert (idx == 5);
+    counts[idx]++;
+  }
+  const double uniform = policy->count.uniform[0];
+  assert (fabs (uniform - picks / 4.0) < 250);
+  for (unsigned idx = 0; idx < 8; idx++)
+    if (idx != 2 && idx != 5)
+      assert (fabs (counts[idx] - uniform / 7) < 150);
+  assert (!policy->count.fallbacks[0]);
+  kissat_release (solver);
+}
+
+// Deactivation removes a variable from the indicator tree too, and
+// activation in stable mode inserts it.
+
+static void test_policy_mixing_hooks (void) {
+  kissat *solver = new_mixing_solver (6, true, 0, 500000);
+  const indicator *const uniform = &solver->policy.uniform;
+  kissat_policy_deactivate (solver, 4);
+  assert (!kissat_indicator_contains (uniform, 4));
+  assert (!kissat_tree_contains (&solver->policy.tree, 4));
+  assert (kissat_indicator_total (uniform) == 5);
+  kissat_policy_activate (solver, 4);
+  assert (kissat_indicator_contains (uniform, 4));
+  assert (kissat_indicator_total (uniform) == 6);
+  assert (!kissat_indicator_inconsistent_node (uniform));
   kissat_release (solver);
 }
 
@@ -315,6 +454,152 @@ static void test_policy_metrics_fallback (void) {
   kissat_release (solver);
 }
 
+// With mixing, the statistics of (1 - gamma) times the policy's
+// distribution plus gamma times the uniform one, by brute force: the
+// policy's is Argmax's for 'eta' infinite, and at a fallback (no positive
+// weight), and the softmax otherwise.
+
+static struct expected expected_mixed (kissat *solver, double eta, bool chb,
+                                       double gamma) {
+  struct expected res = {UINT_MAX, 0, 0, 0};
+  double weight[64], total = 0, largest = -1;
+  unsigned arms = 0;
+  assert (VARS <= 64);
+  for (all_variables (idx)) {
+    weight[idx] = 0;
+    if (!ACTIVE (idx) || VALUE (LIT (idx)))
+      continue;
+    arms++;
+    const double s = kissat_get_score (solver, idx);
+    if (s > largest)
+      largest = s, res.argmax = idx;
+    if (eta == INFINITY)
+      continue;
+    weight[idx] = chb ? exp (eta * s) : pow (s, eta);
+    total += weight[idx];
+  }
+  if (!total)
+    weight[res.argmax] = total = 1;
+  double top = 0;
+  for (all_variables (idx)) {
+    if (!ACTIVE (idx) || VALUE (LIT (idx)))
+      continue;
+    const double p = (1 - gamma) * weight[idx] / total + gamma / arms;
+    if (p > 0)
+      res.entropy -= p * log (p);
+    if (kissat_get_score (solver, idx) == largest)
+      top += p;
+    if (idx == res.argmax)
+      res.differ = 1 - p;
+  }
+  res.lower = 1 - top;
+  return res;
+}
+
+// Decisions of 'solver', every one sampled, against the expected
+// statistics: the means of the samples exactly, and the observed
+// frequencies of another variable than Argmax's choice and of a lower
+// score approximately.
+
+static void check_mixed_samples (kissat *solver, struct expected e,
+                                 unsigned decisions) {
+  unsigned differed = 0, lowered = 0;
+  double largest = -1;
+  for (all_variables (idx))
+    if (ACTIVE (idx) && !VALUE (LIT (idx)))
+      largest = MAX (largest, kissat_get_score (solver, idx));
+  unsigned arms = 0;
+  for (all_variables (idx))
+    arms += ACTIVE (idx) && !VALUE (LIT (idx));
+  for (unsigned i = 0; i < decisions; i++) {
+    const unsigned idx = kissat_next_decision_variable (solver);
+    assert (ACTIVE (idx) && !VALUE (LIT (idx)));
+    differed += idx != e.argmax;
+    lowered += kissat_get_score (solver, idx) < largest;
+  }
+  const policy_metrics *const m = solver->policy.metrics;
+  assert (m->samples == decisions);
+  assert (m->arms == (double) arms * decisions);
+  assert (m->differed == differed), assert (m->lowered == lowered);
+  assert (approx (m->entropy / decisions, e.entropy));
+  assert (approx (m->effective / decisions, exp (e.entropy)));
+  assert (approx (m->differ / decisions, e.differ));
+  assert (approx (m->lower / decisions, e.lower));
+  assert (fabs ((double) differed / decisions - e.differ) < 0.02);
+  assert (fabs ((double) lowered / decisions - e.lower) < 0.02);
+}
+
+// Argmax at gamma 1/5, with a tie at the largest score.
+
+static void test_policy_metrics_mixing_argmax (void) {
+  kissat *solver = new_mixing_solver (10, false, 0, 200000);
+  sample_every_decision (solver);
+  const double scores[10] = {1, 7, 2, 7, 3, 7, 4, 5, 6, 2};
+  set_scores (solver, 10, scores);
+  assign (solver, 3), assign (solver, 0);
+  const struct expected e = expected_mixed (solver, INFINITY, false, 0.2);
+  assert (e.argmax == 1);
+  assert (approx (e.differ, 0.2 * 7 / 8));
+  assert (approx (e.lower, 0.2 * 6 / 8));
+  check_mixed_samples (solver, e, 20000);
+  assert (solver->policy.count.uniform[0]);
+  kissat_release (solver);
+}
+
+// Sample on VSIDS scores at eta 2 and gamma 0.3, and on CHB scores at eta
+// 4 and gamma 0.1: the second pass.
+
+static void test_policy_metrics_mixing_sample (void) {
+  kissat *solver = new_mixing_solver (8, true, 1, 300000);
+  sample_every_decision (solver);
+  const double scores[8] = {3, 1, 4, 1, 5, 5, 2, 0.5};
+  set_scores (solver, 8, scores);
+  assign (solver, 0), assign (solver, 2);
+  const struct expected e = expected_mixed (solver, 2, false, 0.3);
+  assert (e.argmax == 4);
+  check_mixed_samples (solver, e, 20000);
+  kissat_release (solver);
+  solver = kissat_init ();
+  kissat_set_option (solver, "chb", 1);
+  kissat_set_option (solver, "softmax", 1);
+  kissat_set_option (solver, "etalog2", 2);
+  kissat_set_option (solver, "gammappm", 100000);
+  for (int i = 1; i <= 6; i++)
+    kissat_add (solver, i);
+  kissat_add (solver, 0);
+  solver->stable = true;
+  kissat_update_scores (solver);
+  kissat_start_policy (solver);
+  sample_every_decision (solver);
+  const double qs[6] = {0.1, 0.5, 0.5, 0, 0.9, 0.2};
+  set_scores (solver, 6, qs);
+  assign (solver, 4);
+  const struct expected f = expected_mixed (solver, 4, true, 0.1);
+  assert (f.argmax == 1);
+  check_mixed_samples (solver, f, 20000);
+  kissat_release (solver);
+}
+
+// Sample at gamma 1/2 when every unassigned score is zero: on tails the
+// pick falls back to Argmax's choice, the smallest index.
+
+static void test_policy_metrics_mixing_fallback (void) {
+  kissat *solver = new_mixing_solver (6, true, 0, 500000);
+  sample_every_decision (solver);
+  const double scores[6] = {3, 0, 2, 0, 5, 0};
+  set_scores (solver, 6, scores);
+  assign (solver, 0), assign (solver, 2), assign (solver, 4);
+  const struct expected e = expected_mixed (solver, 1, false, 0.5);
+  assert (e.argmax == 1);
+  assert (approx (e.differ, 0.5 * 2 / 3));
+  assert (approx (e.lower, 0));
+  check_mixed_samples (solver, e, 6000);
+  const policy *const policy = &solver->policy;
+  assert (policy->count.fallbacks[0]);
+  assert (policy->count.fallbacks[0] + policy->count.uniform[0] == 6000);
+  kissat_release (solver);
+}
+
 // A sample is due every 'metricsint' decisions, and none with zero; with
 // 'metricsvars' (the default) every 'VARS' decisions if there are more
 // variables.  Warm-up decisions are counted apart.
@@ -361,12 +646,20 @@ void tissat_schedule_policy (void) {
   SCHEDULE_FUNCTION (test_policy_start);
   SCHEDULE_FUNCTION (test_policy_sample);
   SCHEDULE_FUNCTION (test_policy_fallback);
+  SCHEDULE_FUNCTION (test_policy_mixing_start);
+  SCHEDULE_FUNCTION (test_policy_mixing_none);
+  SCHEDULE_FUNCTION (test_policy_mixing_uniform);
+  SCHEDULE_FUNCTION (test_policy_mixing_argmax);
+  SCHEDULE_FUNCTION (test_policy_mixing_hooks);
 #ifdef DECISION_METRICS
   SCHEDULE_FUNCTION (test_policy_metrics_argmax);
   SCHEDULE_FUNCTION (test_policy_metrics_sample);
   SCHEDULE_FUNCTION (test_policy_metrics_chb);
   SCHEDULE_FUNCTION (test_policy_metrics_random);
   SCHEDULE_FUNCTION (test_policy_metrics_fallback);
+  SCHEDULE_FUNCTION (test_policy_metrics_mixing_argmax);
+  SCHEDULE_FUNCTION (test_policy_metrics_mixing_sample);
+  SCHEDULE_FUNCTION (test_policy_metrics_mixing_fallback);
   SCHEDULE_FUNCTION (test_policy_metrics_schedule);
 #endif
 #endif

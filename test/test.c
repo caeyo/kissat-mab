@@ -448,6 +448,7 @@ int main (int argc, char **argv) {
   SCHEDULE (arena);
   SCHEDULE (heap);
   SCHEDULE (tree);
+  SCHEDULE (indicator);
   SCHEDULE (policy);
   SCHEDULE (vector);
   SCHEDULE (rank);

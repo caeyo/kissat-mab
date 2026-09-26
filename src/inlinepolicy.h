@@ -32,8 +32,10 @@
 // and the policy structure is the tree of 'policy.h', whose leaves hold a
 // copy of the score of every available variable and, under Sample, its
 // weight.  A rescale rebuilds the tree, since multiplying every score by
-// the same factor can create ties and changes every weight.  Shadow
-// builds apply every change to the heap 'SCORES' too.
+// the same factor can create ties and changes every weight.  With mixing
+// (option 'gammappm') the availability hooks also keep the indicator tree
+// of 'indicator.h', which holds no scores.  Shadow builds apply every
+// change to the heap 'SCORES' too.
 //
 // The pseudo-activity (all builds, see 'estimator' in 'policy.h') is
 // added to a score where Kissat sets it at activation and after bounded
@@ -221,7 +223,8 @@ static inline void kissat_scale_scores (kissat *solver, double factor) {
     kissat_rebuild_policy (solver);
 }
 
-// Backtracking in stable mode unassigned 'idx'.
+// Backtracking in stable mode unassigned 'idx'.  The tree and, with
+// mixing, the indicator tree get it back if a draw of theirs removed it.
 
 static inline void kissat_policy_unassign (kissat *solver, unsigned idx) {
   assert (!solver->policy.bulk);
@@ -230,8 +233,12 @@ static inline void kissat_policy_unassign (kissat *solver, unsigned idx) {
   if (!kissat_heap_contains (scores, idx))
     kissat_push_heap (solver, scores, idx);
 #endif
-  if (!kissat_tree_contains (&solver->policy.tree, idx))
+  policy *const policy = &solver->policy;
+  if (!kissat_tree_contains (&policy->tree, idx))
     kissat_policy_set_leaf (solver, idx);
+  indicator *const uniform = &policy->uniform;
+  if (uniform->enabled && !kissat_indicator_contains (uniform, idx))
+    kissat_indicator_insert (uniform, idx);
 }
 
 // 'idx' was activated in stable mode and is unassigned.
@@ -241,8 +248,12 @@ static inline void kissat_policy_activate (kissat *solver, unsigned idx) {
 #ifdef SHADOW
   kissat_push_heap (solver, SCORES, idx);
 #endif
-  assert (!kissat_tree_contains (&solver->policy.tree, idx));
+  policy *const policy = &solver->policy;
+  assert (!kissat_tree_contains (&policy->tree, idx));
   kissat_policy_set_leaf (solver, idx);
+  indicator *const uniform = &policy->uniform;
+  if (uniform->enabled)
+    kissat_indicator_insert (uniform, idx);
 }
 
 // 'idx' was fixed or eliminated, in either mode.
@@ -254,9 +265,13 @@ static inline void kissat_policy_deactivate (kissat *solver, unsigned idx) {
   if (kissat_heap_contains (scores, idx))
     kissat_pop_heap (solver, scores, idx);
 #endif
-  tree *const tree = &solver->policy.tree;
+  policy *const policy = &solver->policy;
+  tree *const tree = &policy->tree;
   if (kissat_tree_contains (tree, idx))
     kissat_tree_remove (tree, idx);
+  indicator *const uniform = &policy->uniform;
+  if (uniform->enabled && kissat_indicator_contains (uniform, idx))
+    kissat_indicator_remove (uniform, idx);
 }
 
 static inline void kissat_begin_bulk_score_change (kissat *solver) {

@@ -119,10 +119,14 @@ static void dump_queue (kissat *solver) {
 static void dump_scores (kissat *solver) {
 #ifndef HEAPARGMAX
   const tree *const tree = &solver->policy.tree;
+  const indicator *const uniform = &solver->policy.uniform;
   printf ("tree.leaves = %u\n", tree->leaves);
   for (unsigned i = 0; i < solver->vars; i++)
-    printf ("score[%u] = %g%s\n", i, solver->score[i],
-            kissat_tree_contains (tree, i) ? "" : " (not in tree)");
+    printf ("score[%u] = %g%s%s\n", i, solver->score[i],
+            kissat_tree_contains (tree, i) ? "" : " (not in tree)",
+            !uniform->enabled || kissat_indicator_contains (uniform, i)
+                ? ""
+                : " (not in indicator tree)");
 #endif
 #if defined(HEAPARGMAX) || defined(SHADOW)
   heap *heap = SCORES;

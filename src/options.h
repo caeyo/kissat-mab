@@ -72,6 +72,7 @@
   OPTION (forcephase, 0, 0, 1, "force initial phase") \
   OPTION (forward, 1, 0, 1, "forward subsumption in BVE") \
   OPTION (forwardeffort, 100, 0, 1e6, "effort in per mille") \
+  TREEOPT (gammappm, 0, 0, 1e6, "uniform mixing gamma in parts per million") \
   OPTION (ifthenelse, 1, 0, 1, "extract and eliminate if-then-else gates") \
   OPTION (incremental, 0, 0, 1, "enable incremental solving") \
   OPTION (jumpreasons, 1, 0, 1, "jump binary reasons") \
