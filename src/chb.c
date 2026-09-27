@@ -28,6 +28,7 @@ void kissat_chb_assign (kissat *solver, bool conflict) {
   const uint64_t *const last_conflict = solver->last_conflict;
   const double *const score = solver->score;
   uint64_t plays = 0;
+  kissat_defer_policy_sums (solver, size - played);
   for (unsigned i = played; i < size; i++) {
     const unsigned idx = IDX (trail[i]);
     if (!flags[idx].active)
@@ -42,6 +43,7 @@ void kissat_chb_assign (kissat *solver, bool conflict) {
     kissat_update_score (solver, idx, new_q);
     plays++;
   }
+  kissat_flush_policy_sums (solver);
   estimator->chb.plays += plays;
 }
 

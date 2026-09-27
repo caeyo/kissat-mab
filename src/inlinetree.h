@@ -71,13 +71,22 @@ static inline void kissat_tree_set (tree *tree, unsigned idx, double key,
   }
   if (tree->weighted) {
     // The sums from the leaf up to the root, the running sum kept in a
-    // register rather than read back from the node just written.
+    // register rather than read back from the node just written, or while
+    // deferring the parent marked stale for the flush.
     const tree_weight weight = key == TREE_ABSENT
                                    ? kissat_tree_zero_weight ()
                                    : kissat_tree_weight_of_log2 (log2_weight);
     tree_weight *const weights = tree->weights;
     tree_weight *const sums = tree->sums;
     weights[idx] = weight;
+    if (tree->deferring) {
+      if (sums[first].exponent != TREE_STALE_EXPONENT) {
+        assert (tree->stale < leaves / 2);
+        sums[first].exponent = TREE_STALE_EXPONENT;
+        tree->pending[tree->stale++] = first;
+      }
+      return;
+    }
     tree_weight sum = kissat_tree_add (weight, weights[idx ^ 1]);
     sums[first] = sum;
     for (unsigned i = first; i > 1; i /= 2) {

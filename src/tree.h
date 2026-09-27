@@ -42,6 +42,15 @@
 // increased key climbs while its variable is or becomes the maximum, and a
 // decreased key while its variable was the maximum.  Sums of a weighted
 // tree are recomputed up to the root.
+//
+// Deferred sums (weighted trees).  Between 'kissat_tree_defer' and
+// 'kissat_tree_flush' a leaf change updates the maxima as always but only
+// marks the sum of the leaf's parent stale; the flush then recomputes the
+// stale sums and their ancestors level by level, from the leaves up, each
+// node once however many changed leaves lie below it.  Since every node is
+// recomputed from its children, the sums after the flush are bitwise those
+// that updating each path at once gives.  No sum may be read in between:
+// no draw, no total weight.
 
 #include <assert.h>
 #include <limits.h>
@@ -64,12 +73,16 @@ struct tree_weight {
 struct tree {
   bool weighted;        // keep weights and sums (set before the first
                         // resize or by 'kissat_weigh_tree')
+  bool deferring;       // weighted: sums deferred until the flush
   unsigned leaves;      // number of leaves, a power of two, or zero
+  unsigned stale;       // deferring: number of nodes in 'pending'
   unsigned *args;       // variable of largest key of internal nodes 1 ...
                         // leaves-1 (node 0 unused)
   double *keys;         // key of each leaf, minus infinity if absent
   tree_weight *sums;    // weighted: sums of internal nodes 1 ... leaves-1
   tree_weight *weights; // weighted: weight of each leaf
+  unsigned *pending;    // weighted: the stale parents of changed leaves
+                        // (at most leaves/2)
 };
 
 #define TREE_ABSENT (-INFINITY)
@@ -79,6 +92,10 @@ struct tree {
 
 #define TREE_MAX_EXPONENT (1 << 28)
 #define TREE_ZERO_EXPONENT (-(1 << 29))
+
+// The exponent that marks a sum as stale while sums are deferred.
+
+#define TREE_STALE_EXPONENT INT_MAX
 
 // A child whose exponent is more than this below its sibling's is left
 // out of their sum.  Its value is then below 2^(33 - TREE_NEGLIGIBLE)
@@ -102,9 +119,14 @@ void kissat_release_tree (struct kissat *, tree *);
 
 void kissat_weigh_tree (struct kissat *, tree *);
 
-// Recomputes every internal node from the leaves, in O(n).
+// Recomputes every internal node from the leaves, in O(n).  While sums
+// are deferred, nothing is left stale.
 
 void kissat_rebuild_tree (tree *);
+
+// Recomputes the stale sums and their ancestors, and ends deferring.
+
+void kissat_tree_flush (tree *);
 
 // The first internal node (in index order) that differs bitwise from what
 // its children give, or zero if there is none.  'kissat_check_tree'
@@ -268,7 +290,17 @@ static inline unsigned kissat_tree_max (const tree *tree) {
 
 static inline tree_weight kissat_tree_total (const tree *tree) {
   assert (tree->weighted);
+  assert (!tree->deferring);
   return tree->leaves ? tree->sums[1] : kissat_tree_zero_weight ();
+}
+
+// Defers the sums of a weighted tree until 'kissat_tree_flush'.
+
+static inline void kissat_tree_defer (tree *tree) {
+  assert (tree->weighted);
+  assert (!tree->deferring);
+  assert (!tree->stale);
+  tree->deferring = true;
 }
 
 static inline bool kissat_tree_has_weight (const tree *tree) {

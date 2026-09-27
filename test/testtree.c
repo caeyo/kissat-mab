@@ -307,10 +307,70 @@ static void test_tree_weigh (void) {
   kissat_release_tree (0, tree);
 }
 
+// Deferred sums: batches of random changes, one tree deferring its sums
+// until the batch's flush, the other updating every path at once.  After
+// every flush both trees are bitwise equal, node by node.  The maxima
+// stay exact during a batch, and a rebuild inside a batch (as a rescale
+// during a bump round does) leaves nothing stale.
+
+static void test_tree_deferred (void) {
+  generator random = 7;
+  for (unsigned round = 0; round < 20; round++) {
+    const unsigned vars = 1 + kissat_next_random32 (&random) % 500;
+    tree dummy, *tree = &dummy, dummy_copy, *copy = &dummy_copy;
+    memset (tree, 0, sizeof *tree);
+    memset (copy, 0, sizeof *copy);
+    tree->weighted = copy->weighted = true;
+    kissat_resize_tree (0, tree, vars);
+    kissat_resize_tree (0, copy, vars);
+    for (unsigned batch = 0; batch < 200; batch++) {
+      const unsigned changes = kissat_next_random32 (&random) % 64;
+      const bool rebuild = !(kissat_next_random32 (&random) % 20);
+      kissat_tree_defer (tree);
+      for (unsigned change = 0; change < changes; change++) {
+        const unsigned idx = kissat_next_random32 (&random) % vars;
+        if (kissat_tree_contains (copy, idx) &&
+            !(kissat_next_random32 (&random) % 3)) {
+          kissat_tree_remove (tree, idx);
+          kissat_tree_remove (copy, idx);
+        } else {
+          const double key = random_key (&random);
+          const double log2_weight = random_log2_weight (&random);
+          kissat_tree_set (tree, idx, key, log2_weight);
+          kissat_tree_set (copy, idx, key, log2_weight);
+        }
+        assert (kissat_tree_max (tree) == kissat_tree_max (copy));
+        if (rebuild && change == changes / 2) {
+          kissat_rebuild_tree (tree);
+          assert (!tree->stale);
+        }
+      }
+      assert (tree->deferring);
+      kissat_tree_flush (tree);
+      assert (!tree->deferring), assert (!tree->stale);
+      assert (!kissat_tree_inconsistent_node (tree));
+      for (unsigned i = 0; i < tree->leaves; i++) {
+        assert (kissat_same_double (tree->keys[i], copy->keys[i]));
+        assert (kissat_tree_same_weight (tree->weights[i], copy->weights[i]));
+      }
+      for (unsigned i = 1; i < tree->leaves; i++) {
+        assert (tree->args[i] == copy->args[i]);
+        assert (kissat_tree_same_weight (tree->sums[i], copy->sums[i]));
+      }
+    }
+    kissat_tree_defer (tree);
+    kissat_tree_flush (tree); // an empty batch
+    assert (!kissat_tree_inconsistent_node (tree));
+    kissat_release_tree (0, tree);
+    kissat_release_tree (0, copy);
+  }
+}
+
 void tissat_schedule_tree (void) {
   SCHEDULE_FUNCTION (test_tree_basic);
   SCHEDULE_FUNCTION (test_tree_random_unweighted);
   SCHEDULE_FUNCTION (test_tree_random_weighted);
+  SCHEDULE_FUNCTION (test_tree_deferred);
   SCHEDULE_FUNCTION (test_tree_sample);
   SCHEDULE_FUNCTION (test_tree_sample_edges);
   SCHEDULE_FUNCTION (test_tree_weights);

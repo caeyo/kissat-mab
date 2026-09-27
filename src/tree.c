@@ -2,6 +2,7 @@
 #include "inlinetree.h"
 
 void kissat_rebuild_tree (tree *tree) {
+  tree->stale = 0;
   const unsigned leaves = tree->leaves;
   if (!leaves)
     return;
@@ -12,7 +13,35 @@ void kissat_rebuild_tree (tree *tree) {
   }
 }
 
+// Level by level from the leaves up: every pending node lies on the same
+// level, its sum is recomputed from its children (which are fresh), and
+// its parent becomes pending unless it already is.  The pending nodes are
+// kept in place, since a level has at most as many parents as nodes.
+
+void kissat_tree_flush (tree *tree) {
+  assert (tree->deferring);
+  tree->deferring = false;
+  unsigned *const pending = tree->pending;
+  tree_weight *const sums = tree->sums;
+  unsigned n = tree->stale;
+  tree->stale = 0;
+  while (n) {
+    for (unsigned j = 0; j < n; j++)
+      kissat_tree_update_sum (tree, pending[j]);
+    unsigned m = 0;
+    for (unsigned j = 0; j < n; j++) {
+      const unsigned parent = pending[j] / 2;
+      if (parent && sums[parent].exponent != TREE_STALE_EXPONENT) {
+        sums[parent].exponent = TREE_STALE_EXPONENT;
+        pending[m++] = parent;
+      }
+    }
+    n = m;
+  }
+}
+
 void kissat_resize_tree (struct kissat *solver, tree *tree, unsigned size) {
+  assert (!tree->deferring);
   unsigned new_leaves = 0;
   if (size) {
     new_leaves = 2;
@@ -31,7 +60,7 @@ void kissat_resize_tree (struct kissat *solver, tree *tree, unsigned size) {
 #endif
   double *keys = 0;
   tree_weight *weights = 0, *sums = 0;
-  unsigned *args = 0;
+  unsigned *args = 0, *pending = 0;
   if (new_leaves) {
     keys = kissat_nalloc (solver, new_leaves, sizeof *keys);
     args = kissat_calloc (solver, new_leaves, sizeof *args);
@@ -46,6 +75,7 @@ void kissat_resize_tree (struct kissat *solver, tree *tree, unsigned size) {
         weights[idx] = tree->weights[idx];
       for (unsigned idx = kept; idx < new_leaves; idx++)
         weights[idx] = kissat_tree_zero_weight ();
+      pending = kissat_nalloc (solver, new_leaves / 2, sizeof *pending);
     }
   }
   kissat_release_tree (solver, tree);
@@ -54,6 +84,7 @@ void kissat_resize_tree (struct kissat *solver, tree *tree, unsigned size) {
   tree->args = args;
   tree->weights = weights;
   tree->sums = sums;
+  tree->pending = pending;
   kissat_rebuild_tree (tree);
 }
 
@@ -65,6 +96,7 @@ void kissat_weigh_tree (struct kissat *solver, tree *tree) {
     return;
   tree->weights = kissat_nalloc (solver, leaves, sizeof *tree->weights);
   tree->sums = kissat_nalloc (solver, leaves, sizeof *tree->sums);
+  tree->pending = kissat_nalloc (solver, leaves / 2, sizeof *tree->pending);
   for (unsigned idx = 0; idx < leaves; idx++)
     tree->weights[idx] = kissat_tree_zero_weight ();
   kissat_rebuild_tree (tree);
@@ -77,6 +109,8 @@ void kissat_release_tree (struct kissat *solver, tree *tree) {
   if (tree->weighted) {
     kissat_dealloc (solver, tree->weights, leaves, sizeof *tree->weights);
     kissat_dealloc (solver, tree->sums, leaves, sizeof *tree->sums);
+    kissat_dealloc (solver, tree->pending, leaves / 2,
+                    sizeof *tree->pending);
   }
   const bool weighted = tree->weighted;
   memset (tree, 0, sizeof *tree);
@@ -84,6 +118,7 @@ void kissat_release_tree (struct kissat *solver, tree *tree) {
 }
 
 unsigned kissat_tree_inconsistent_node (const tree *tree) {
+  assert (!tree->deferring);
   const unsigned leaves = tree->leaves;
   for (unsigned i = 1; i < leaves; i++) {
     if (tree->args[i] != kissat_tree_children_max (tree, i))

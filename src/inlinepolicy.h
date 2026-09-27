@@ -23,6 +23,18 @@
 // between, score writes, rescaling included, go to the estimator only, and
 // the end rebuilds the policy structure once, in linear time.
 //
+// A CHB payment round, the writes of the variables assigned by one search
+// propagation, is bracketed by 'kissat_defer_policy_sums' and
+// 'kissat_flush_policy_sums'.  If the round has at least
+// 'POLICY_DEFER_SUMS' variables, a weighted tree (Sample) defers the sums
+// above the changed leaves in between, and the flush recomputes each of
+// them once (see 'tree.h'); the tree is then bitwise what updating every
+// path at once would have made it.  The policy never picks in between.
+// Smaller rounds, and the writes of bump rounds and the reinsertions of
+// backtracks, update every path at once: in the profiling task's timing
+// deferring them saved nothing, or cost time on small batches, while CHB's
+// large payment rounds, whose paths share most of their nodes, gained.
+//
 // HeapArgmax builds: the scores are stored in the binary heap 'SCORES',
 // and each function below performs the heap operation Kissat itself
 // performs at that point.  Bulk changes go through the heap one write at a
@@ -283,6 +295,21 @@ static inline void kissat_end_bulk_score_change (kissat *solver) {
   assert (solver->policy.bulk);
   solver->policy.bulk = false;
   kissat_rebuild_policy (solver);
+}
+
+#define POLICY_DEFER_SUMS 32
+
+static inline void kissat_defer_policy_sums (kissat *solver,
+                                             unsigned size) {
+  tree *const tree = &solver->policy.tree;
+  if (tree->weighted && size >= POLICY_DEFER_SUMS)
+    kissat_tree_defer (tree);
+}
+
+static inline void kissat_flush_policy_sums (kissat *solver) {
+  tree *const tree = &solver->policy.tree;
+  if (tree->deferring)
+    kissat_tree_flush (tree);
 }
 
 #ifdef DECISION_METRICS
