@@ -89,6 +89,10 @@ void kissat_backtrack_without_updating_phases (kissat *solver,
 
   unsigned *q = new_end;
   if (solver->stable) {
+#ifndef HEAPARGMAX
+    // Under CHB the leaves of the paid variables are refreshed here.
+    kissat_defer_policy_sums (solver, old_end - new_end);
+#endif
     for (const unsigned *p = q; p != old_end; p++) {
       const unsigned lit = *p;
       const unsigned idx = IDX (lit);
@@ -108,6 +112,9 @@ void kissat_backtrack_without_updating_phases (kissat *solver,
         unassigned++;
       }
     }
+#ifndef HEAPARGMAX
+    kissat_flush_policy_sums (solver);
+#endif
   } else {
     links *links = solver->links;
     for (const unsigned *p = q; p != old_end; p++) {

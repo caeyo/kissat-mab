@@ -228,9 +228,11 @@ static void shadow_pick (kissat *solver, unsigned res, bool uniform) {
 }
 
 // Every leaf against the estimator, the heap and the assignment; every
-// internal node against its children.  In a weighted tree every leaf's
-// weight must be the one its score gives, and an absent leaf's zero.  With
-// mixing, the indicator tree holds only active variables and every
+// internal node against its children.  A leaf's key must be its variable's
+// score, except under CHB for an assigned variable, whose leaf may lag the
+// score (see 'kissat_update_assigned_score').  In a weighted tree every
+// leaf's weight must be the one its key gives, and an absent leaf's zero.
+// With mixing, the indicator tree holds only active variables and every
 // unassigned one, and every count is the sum of its children's.
 
 static void shadow_check_tree (kissat *solver) {
@@ -241,6 +243,7 @@ static void shadow_check_tree (kissat *solver) {
   const double *const score = solver->score;
   const flags *const flags = solver->flags;
   const value *const values = solver->values;
+  const bool chb = kissat_chb (solver);
   const uint64_t check = ++policy->shadow.checks;
   const uint64_t pick = policy->shadow.picks;
   if (policy->bulk)
@@ -270,20 +273,20 @@ static void shadow_check_tree (kissat *solver) {
                       "%u in the tree",
                       pick, idx);
       const double k = kissat_tree_key (tree, idx);
-      if (!kissat_same_double (k, s))
+      if (!kissat_same_double (k, s) && (available || !chb))
         kissat_fatal ("shadow mode: pick %" PRIu64 ": leaf key %.17g of "
                       "variable %u differs from its score %.17g",
                       pick, k, idx, s);
       if (tree->weighted) {
         const tree_weight w = kissat_tree_weight (tree, idx);
         const tree_weight e = kissat_tree_weight_of_log2 (
-            kissat_policy_log2_weight (policy, s));
+            kissat_policy_log2_weight (policy, k));
         if (!kissat_tree_same_weight (w, e))
           kissat_fatal ("shadow mode: pick %" PRIu64 ": leaf weight "
                         "%.17g * 2^%d of variable %u differs from "
-                        "%.17g * 2^%d given by its score %.17g",
+                        "%.17g * 2^%d given by its key %.17g",
                         pick, w.mantissa, w.exponent, idx, e.mantissa,
-                        e.exponent, s);
+                        e.exponent, k);
       }
     } else if (available)
       kissat_fatal ("shadow mode: pick %" PRIu64 ": unassigned active "
@@ -393,7 +396,10 @@ unsigned kissat_policy_peek (kissat *solver) {
 
 // Every active variable becomes available, in the tree and, with mixing,
 // in the indicator tree.  The heap's order of pushes does not matter to
-// the trees, which are functions of their leaves.
+// the trees, which are functions of their leaves.  Under CHB the tree is
+// rebuilt even if no variable was added: focused mode unassigns variables
+// without the policy's hooks, so leaves that lagged their scores when
+// stable mode was left may belong to unassigned variables now.
 
 void kissat_update_scores (kissat *solver) {
   assert (solver->stable);
@@ -410,7 +416,7 @@ void kissat_update_scores (kissat *solver) {
       kissat_policy_put_leaf (solver, idx);
       added = true;
     }
-  if (added)
+  if (added || kissat_chb (solver))
     kissat_rebuild_policy (solver);
   indicator *const uniform = &solver->policy.uniform;
   if (!uniform->enabled)

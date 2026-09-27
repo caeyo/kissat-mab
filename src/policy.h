@@ -34,8 +34,10 @@
 // the variables, and the score heap is not compiled in, so no code can
 // read a stale heap.  Assigned variables stay in the tree until a pick
 // meets them, which removes them (lazy deletion); backtracking puts them
-// back.  The option 'softmax', read at the start of the search, selects
-// the policy:
+// back.  With CHB scores the leaf of an assigned variable lags its score
+// from CHB's payment until backtracking refreshes it (see
+// 'inlinepolicy.h').  The option 'softmax', read at the start of the
+// search, selects the policy:
 //
 //   Argmax ('softmax=0', the default, i.e. eta = infinity): the variable
 //   of largest score, the smallest index among ties.  The tree keeps no
@@ -114,8 +116,10 @@
 // bitwise; with mixing, at every pick that is Argmax's choice (tails).
 // Under both policies, every 1000 picks the whole tree (keys, weights and
 // internal nodes) is checked against the estimator, the heap and the
-// assignment, and with mixing the indicator tree against the assignment.
-// A failed check is a fatal error.
+// assignment, and with mixing the indicator tree against the assignment;
+// under CHB the key of an assigned variable's leaf may lag its score, and
+// its weight is checked against its key.  A failed check is a fatal
+// error.
 
 #if defined(HEAPARGMAX) && defined(SHADOW)
 #error "'HEAPARGMAX' and 'SHADOW' exclude each other"

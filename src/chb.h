@@ -35,6 +35,11 @@
 // on the trail are not paid twice.  Warm-up, probing and the other
 // inprocessing propagate by other routines and pay nothing.
 //
+// Every variable paid is assigned, so a payment changes Q in the estimator
+// only, and the variable's leaf in the policy's tree lags Q until
+// backtracking unassigns the variable and refreshes it (see
+// 'inlinepolicy.h').
+//
 // Nothing decays and nothing is rescaled: Q lies in [0, 1].  In stable
 // mode 'reorder' leaves Q alone (it is part of the VSIDS estimator), so
 // the tree is never rebuilt for CHB's sake.

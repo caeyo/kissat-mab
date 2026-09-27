@@ -23,17 +23,30 @@
 // between, score writes, rescaling included, go to the estimator only, and
 // the end rebuilds the policy structure once, in linear time.
 //
-// A CHB payment round, the writes of the variables assigned by one search
-// propagation, is bracketed by 'kissat_defer_policy_sums' and
-// 'kissat_flush_policy_sums'.  If the round has at least
-// 'POLICY_DEFER_SUMS' variables, a weighted tree (Sample) defers the sums
+// CHB pays only assigned variables, and the weight of an assigned variable
+// matters only once it is unassigned again.  So a payment writes the
+// estimator only ('kissat_update_assigned_score'), and the variable's leaf,
+// which lazy deletion may still keep in the tree, lags its score until
+// backtracking unassigns the variable and 'kissat_policy_unassign'
+// refreshes the leaf.  The leaves of unassigned variables never lag, so
+// Argmax's choice and the distribution of Sample's picks are unchanged;
+// what changes is the weight of the assigned variables in the tree, and
+// with it which assigned variables Sample's draws meet, and so its random
+// stream and its trajectory.
+//
+// Under CHB a stable-mode backtrack, which refreshes the leaves of the
+// variables it unassigns, is bracketed by 'kissat_defer_policy_sums' and
+// 'kissat_flush_policy_sums'.  If it takes back at least
+// 'POLICY_DEFER_SUMS' literals, a weighted tree (Sample) defers the sums
 // above the changed leaves in between, and the flush recomputes each of
 // them once (see 'tree.h'); the tree is then bitwise what updating every
 // path at once would have made it.  The policy never picks in between.
-// Smaller rounds, and the writes of bump rounds and the reinsertions of
-// backtracks, update every path at once: in the profiling task's timing
-// deferring them saved nothing, or cost time on small batches, while CHB's
-// large payment rounds, whose paths share most of their nodes, gained.
+// Smaller backtracks, the backtracks of the VSIDS line (reinsertions only)
+// and the writes of bump rounds update every path at once: in the
+// profiling task's timing deferring bump rounds and backtracks saved
+// nothing, or cost time on small batches, while CHB's large payment
+// rounds, whose paths share most of their nodes, gained.  Those payments
+// now reach the tree when backtracking takes their variables back.
 //
 // HeapArgmax builds: the scores are stored in the binary heap 'SCORES',
 // and each function below performs the heap operation Kissat itself
@@ -55,7 +68,8 @@
 //
 // With CHB scores (tree builds, 'chb=1', see 'chb.h') a score is the
 // variable's ERWA value Q: it starts at zero at activation, there is no
-// pseudo-activity, and CHB pays it after every search propagation.
+// pseudo-activity, and CHB pays it after every search propagation, to the
+// variables the propagation assigned (see above for their leaves).
 
 #include "chb.h"
 #include "internal.h"
@@ -209,6 +223,28 @@ static inline void kissat_update_score (kissat *solver, unsigned idx,
     kissat_policy_set_leaf (solver, idx);
 }
 
+// CHB's payment of the assigned variable 'idx': the estimator (and the
+// heap of shadow builds) gets the new score, the tree does not.  Its leaf,
+// if lazy deletion still keeps it, lags the score until backtracking
+// unassigns the variable ('kissat_policy_unassign').
+
+static inline void kissat_update_assigned_score (kissat *solver,
+                                                 unsigned idx,
+                                                 double score) {
+  assert (idx < VARS);
+  assert (VALUE (LIT (idx)));
+  double *const p = solver->score + idx;
+  const double old_score = *p;
+  if (old_score == score)
+    return;
+  LOG ("update score of assigned %s from %g to %g", LOGVAR (idx),
+       old_score, score);
+  *p = score;
+#ifdef SHADOW
+  kissat_update_heap (solver, SCORES, idx, score);
+#endif
+}
+
 // The largest score stored for any variable, active or not, assigned or
 // not (0 if no score was ever changed).  This is the reference of the
 // estimator's rescaling, not the policy's maximum ('kissat_policy_peek').
@@ -237,6 +273,8 @@ static inline void kissat_scale_scores (kissat *solver, double factor) {
 
 // Backtracking in stable mode unassigned 'idx'.  The tree and, with
 // mixing, the indicator tree get it back if a draw of theirs removed it.
+// Under CHB a leaf the tree kept is refreshed if it lags the score, which
+// CHB's payments changed while the variable was assigned.
 
 static inline void kissat_policy_unassign (kissat *solver, unsigned idx) {
   assert (!solver->policy.bulk);
@@ -246,7 +284,10 @@ static inline void kissat_policy_unassign (kissat *solver, unsigned idx) {
     kissat_push_heap (solver, scores, idx);
 #endif
   policy *const policy = &solver->policy;
-  if (!kissat_tree_contains (&policy->tree, idx))
+  const tree *const tree = &policy->tree;
+  if (!kissat_tree_contains (tree, idx) ||
+      (kissat_chb (solver) &&
+       kissat_tree_key (tree, idx) != solver->score[idx]))
     kissat_policy_set_leaf (solver, idx);
   indicator *const uniform = &policy->uniform;
   if (uniform->enabled && !kissat_indicator_contains (uniform, idx))
@@ -299,10 +340,12 @@ static inline void kissat_end_bulk_score_change (kissat *solver) {
 
 #define POLICY_DEFER_SUMS 32
 
+// A stable-mode backtrack takes back 'size' literals (see above).
+
 static inline void kissat_defer_policy_sums (kissat *solver,
                                              unsigned size) {
   tree *const tree = &solver->policy.tree;
-  if (tree->weighted && size >= POLICY_DEFER_SUMS)
+  if (tree->weighted && size >= POLICY_DEFER_SUMS && kissat_chb (solver))
     kissat_tree_defer (tree);
 }
 

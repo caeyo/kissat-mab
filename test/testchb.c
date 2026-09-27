@@ -1,4 +1,6 @@
+#include "../src/backtrack.h"
 #include "../src/chb.h"
+#include "../src/decide.h"
 #include "../src/inlinepolicy.h"
 
 #include "test.h"
@@ -30,6 +32,7 @@ static void assign (kissat *solver, unsigned idx) {
   const unsigned lit = LIT (idx);
   solver->values[lit] = 1;
   solver->values[NOT (lit)] = -1;
+  solver->assigned[idx].trail = SIZE_ARRAY (solver->trail);
   PUSH_ARRAY (solver->trail, lit);
 }
 
@@ -137,10 +140,197 @@ static void test_chb_rewards (void) {
   assert (estimator->chb.conflicts == 1);
   solver->stable = true;
 
-  for (unsigned idx = 0; idx < 4; idx++)
-    if (kissat_tree_contains (tree, idx))
-      assert (kissat_tree_key (tree, idx) == kissat_get_score (solver, idx));
+  // Variable 0, paid while it stayed assigned, still has the leaf of its
+  // initial Q = 0, and backtracking refreshes it.
+  assert (kissat_tree_key (tree, 0) == 0);
+  assert (kissat_get_score (solver, 0) == q0);
+  shrink (solver, 0);
+  for (unsigned idx = 0; idx < 4; idx++) {
+    assert (kissat_tree_contains (tree, idx));
+    assert (kissat_tree_key (tree, idx) == kissat_get_score (solver, idx));
+  }
   assert (!kissat_tree_inconsistent_node (tree));
+  kissat_release (solver);
+}
+
+// Every leaf of the tree is present, has its variable's score as key and,
+// in a weighted tree, the weight that score gives, and every internal node
+// is what its children give: the tree is bitwise the one a rebuild makes.
+
+static void check_fresh_tree (kissat *solver) {
+  const policy *const policy = &solver->policy;
+  const tree *const tree = &policy->tree;
+  for (all_variables (idx)) {
+    assert (kissat_tree_contains (tree, idx));
+    const double score = kissat_get_score (solver, idx);
+    assert (kissat_same_double (kissat_tree_key (tree, idx), score));
+    if (!tree->weighted)
+      continue;
+    const tree_weight expected = kissat_tree_weight_of_log2 (
+        kissat_policy_log2_weight (policy, score));
+    assert (kissat_tree_same_weight (kissat_tree_weight (tree, idx),
+                                     expected));
+  }
+  assert (!kissat_tree_inconsistent_node (tree));
+}
+
+// A payment changes the score of an assigned variable but not its leaf,
+// which lags until backtracking unassigns the variable.  Argmax meets a
+// lagging leaf only as an assigned variable, which it removes, so it picks
+// the largest score among the unassigned variables as before, and the
+// removed variable comes back with its current score.
+
+static void test_chb_lagging_argmax (void) {
+  kissat *solver = new_solver (4, false, 0);
+  const tree *const tree = &solver->policy.tree;
+  const double initial[4] = {0.1, 0.2, 0.95, 0.3};
+  for (unsigned idx = 0; idx < 4; idx++)
+    kissat_update_score (solver, idx, initial[idx]);
+  check_fresh_tree (solver);
+
+  // Paid without a conflict at age 1: Q = 0.6 * 0.95 + 0.4 * 0.9.
+  kissat_internal_assume (solver, LIT (2));
+  kissat_chb_assign (solver, false);
+  const double q2 = erwa (0.95, 0.4, 0.9);
+  assert (kissat_get_score (solver, 2) == q2);
+  assert (q2 < 0.95);
+  assert (kissat_tree_key (tree, 2) == 0.95);
+  assert (kissat_tree_max (tree) == 2);
+  kissat_backtrack_without_updating_phases (solver, 0);
+  assert (kissat_tree_key (tree, 2) == q2);
+  check_fresh_tree (solver);
+
+  // Paid again, and met by a pick while assigned: removed, and put back
+  // with its score when backtracking unassigns it.
+  kissat_internal_assume (solver, LIT (2));
+  kissat_chb_assign (solver, true);
+  const double q2_again = erwa (q2, 0.4, 1.0);
+  assert (kissat_get_score (solver, 2) == q2_again);
+  assert (kissat_tree_key (tree, 2) == q2);
+  assert (kissat_policy_pick (solver) == 3);
+  assert (!kissat_tree_contains (tree, 2));
+  kissat_backtrack_without_updating_phases (solver, 0);
+  assert (kissat_tree_key (tree, 2) == q2_again);
+  check_fresh_tree (solver);
+  assert (kissat_policy_pick (solver) == 2);
+  kissat_release (solver);
+}
+
+// Sample-CHB through the solver's backtracking: 45 decisions paid with
+// different rewards, picks whose draws meet and remove paid variables, a
+// backtrack of 5 literals, which updates every path at once, and one of
+// 40, which defers its sums.  Afterwards the tree is bitwise the one a
+// rebuild makes.
+
+static void test_chb_lagging_sample (void) {
+  kissat *solver = new_solver (64, true, 4);
+  const tree *const tree = &solver->policy.tree;
+  assert (tree->weighted);
+  for (unsigned idx = 0; idx < 45; idx++) {
+    kissat_internal_assume (solver, LIT (idx));
+    kissat_chb_assign (solver, !(idx % 3));
+  }
+  for (unsigned idx = 0; idx < 45; idx++) {
+    assert (kissat_get_score (solver, idx) > 0);
+    assert (kissat_tree_key (tree, idx) == 0);
+  }
+  for (unsigned i = 0; i < 3; i++)
+    assert (kissat_policy_pick (solver) >= 45);
+  unsigned removed = 0;
+  for (unsigned idx = 0; idx < 45; idx++)
+    removed += !kissat_tree_contains (tree, idx);
+  assert (removed > 0), assert (removed < 45);
+  kissat_backtrack_without_updating_phases (solver, 40);
+  for (unsigned idx = 0; idx < 45; idx++)
+    if (idx >= 40)
+      assert (kissat_tree_key (tree, idx) == kissat_get_score (solver, idx));
+    else if (kissat_tree_contains (tree, idx))
+      assert (kissat_tree_key (tree, idx) == 0);
+  assert (!kissat_tree_inconsistent_node (tree));
+  kissat_backtrack_without_updating_phases (solver, 0);
+  assert (!tree->deferring);
+  check_fresh_tree (solver);
+  kissat_release (solver);
+}
+
+// Chronological backtracking keeps a literal of a lower level that lies
+// above the new level's trail and moves it down.  A paid literal so kept
+// stays below the paid trail position, its leaf lags until it is
+// unassigned, and then it is refreshed.
+
+static void test_chb_lagging_kept (void) {
+  kissat *solver = new_solver (4, true, 4);
+  const tree *const tree = &solver->policy.tree;
+  kissat_internal_assume (solver, LIT (0)); // level 1, trail position 0
+  kissat_internal_assume (solver, LIT (1)); // level 2, trail position 1
+  kissat_internal_assume (solver, LIT (2)); // trail position 2
+  solver->assigned[2].level = 1;            // out of order on level 1
+  kissat_chb_assign (solver, false);
+  assert (solver->estimator.chb.played == 3);
+  kissat_backtrack_without_updating_phases (solver, 1);
+  assert (!VALUE (LIT (1)) && VALUE (LIT (2)));
+  assert (solver->assigned[2].trail == 1);
+  assert (solver->estimator.chb.played == 2);
+  assert (kissat_tree_key (tree, 1) == kissat_get_score (solver, 1));
+  assert (kissat_tree_key (tree, 2) == 0);
+  assert (kissat_get_score (solver, 2) > 0);
+  kissat_backtrack_without_updating_phases (solver, 0);
+  check_fresh_tree (solver);
+  kissat_release (solver);
+}
+
+// Focused mode unassigns without the policy's hooks, so a leaf that lagged
+// when stable mode was left belongs to an unassigned variable afterwards.
+// Entering stable mode rebuilds the tree, though no variable is added.
+
+static void test_chb_lagging_modes (void) {
+  kissat *solver = new_solver (4, true, 2);
+  const tree *const tree = &solver->policy.tree;
+  kissat_internal_assume (solver, LIT (1));
+  kissat_chb_assign (solver, true);
+  solver->stable = false;
+  kissat_backtrack_without_updating_phases (solver, 0);
+  assert (kissat_tree_contains (tree, 1));
+  assert (kissat_tree_key (tree, 1) == 0);
+  assert (kissat_get_score (solver, 1) == erwa (0, 0.4, 1.0));
+  solver->stable = true;
+  kissat_update_scores (solver);
+  check_fresh_tree (solver);
+  kissat_release (solver);
+}
+
+// Backtracks defer their sums only under CHB, only in a weighted tree
+// (Sample) and only from 'POLICY_DEFER_SUMS' literals on.
+
+static void test_chb_defer_condition (void) {
+  kissat *solver = new_solver (40, true, 4);
+  tree *const tree = &solver->policy.tree;
+  kissat_defer_policy_sums (solver, POLICY_DEFER_SUMS - 1);
+  assert (!tree->deferring);
+  kissat_defer_policy_sums (solver, POLICY_DEFER_SUMS);
+  assert (tree->deferring);
+  kissat_flush_policy_sums (solver);
+  assert (!tree->deferring);
+  kissat_release (solver);
+
+  solver = new_solver (40, false, 0);
+  kissat_defer_policy_sums (solver, 40);
+  assert (!solver->policy.tree.deferring);
+  kissat_flush_policy_sums (solver);
+  kissat_release (solver);
+
+  solver = kissat_init ();
+  kissat_set_option (solver, "softmax", 1);
+  for (unsigned i = 1; i <= 40; i++)
+    kissat_add (solver, (int) i);
+  kissat_add (solver, 0);
+  solver->stable = true;
+  kissat_update_scores (solver);
+  kissat_start_policy (solver);
+  assert (solver->policy.tree.weighted);
+  kissat_defer_policy_sums (solver, 40);
+  assert (!solver->policy.tree.deferring);
+  kissat_flush_policy_sums (solver);
   kissat_release (solver);
 }
 
@@ -178,6 +368,11 @@ void tissat_schedule_chb (void) {
   SCHEDULE_FUNCTION (test_chb_alpha);
   SCHEDULE_FUNCTION (test_chb_initial_scores);
   SCHEDULE_FUNCTION (test_chb_rewards);
+  SCHEDULE_FUNCTION (test_chb_lagging_argmax);
+  SCHEDULE_FUNCTION (test_chb_lagging_sample);
+  SCHEDULE_FUNCTION (test_chb_lagging_kept);
+  SCHEDULE_FUNCTION (test_chb_lagging_modes);
+  SCHEDULE_FUNCTION (test_chb_defer_condition);
   SCHEDULE_FUNCTION (test_chb_sample);
 #endif
 }
