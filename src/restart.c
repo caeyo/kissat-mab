@@ -144,6 +144,10 @@ void kissat_restart (kissat *solver) {
                             CONFLICTS, solver->limits.restart.conflicts);
   LOG ("restarting to level %u", level);
   kissat_backtrack_in_consistent_state (solver, level);
+#ifndef HEAPARGMAX
+  if (solver->stable)
+    kissat_restart_keys (solver); // a draw point (see 'keys.h')
+#endif
   if (!solver->stable)
     kissat_update_focused_restart_limit (solver);
   REPORT (1, 'R');

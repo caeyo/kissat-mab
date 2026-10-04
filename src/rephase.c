@@ -126,6 +126,9 @@ static char reset_phases (kissat *solver) {
 void kissat_rephase (kissat *solver) {
   kissat_backtrack_propagate_and_flush_trail (solver);
   assert (!solver->inconsistent);
+#ifndef HEAPARGMAX
+  kissat_rephase_keys (solver); // a draw point with 'redraw=1'
+#endif
   START (rephase);
   INC (rephased);
 #ifndef QUIET

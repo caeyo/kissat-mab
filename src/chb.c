@@ -7,6 +7,10 @@
 
 #include <inttypes.h>
 
+// Under UCB and TS (see 'keys.h') every payment is also an observation of
+// the variable, and the counts' increment grows at every conflict after
+// its payments.
+
 void kissat_chb_assign (kissat *solver, bool conflict) {
   estimator *const estimator = &solver->estimator;
   const unsigned size = SIZE_ARRAY (solver->trail);
@@ -18,8 +22,12 @@ void kissat_chb_assign (kissat *solver, bool conflict) {
   const uint64_t conflicts = estimator->chb.conflicts;
   if (conflict)
     estimator->chb.conflicts = conflicts + 1;
-  if (played >= size)
+  const bool counts = solver->policy.keys.counts;
+  if (played >= size) {
+    if (conflict && counts)
+      kissat_keys_chb_conflict (solver);
     return;
+  }
   const double alpha = kissat_chb_alpha (conflicts);
   const double multiplier =
       conflict ? CHB_MULTIPLIER_CONFLICT : CHB_MULTIPLIER_NO_CONFLICT;
@@ -40,9 +48,13 @@ void kissat_chb_assign (kissat *solver, bool conflict) {
     LOG ("CHB pays %s reward %g age %" PRIu64 " Q %g -> %g", LOGVAR (idx),
          reward, age, old_q, new_q);
     kissat_update_assigned_score (solver, idx, new_q);
+    if (counts)
+      kissat_keys_paid (solver, idx);
     plays++;
   }
   estimator->chb.plays += plays;
+  if (conflict && counts)
+    kissat_keys_chb_conflict (solver);
 }
 
 // On-the-fly strengthening analyses one conflict in several rounds, each

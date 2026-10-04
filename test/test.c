@@ -450,6 +450,7 @@ int main (int argc, char **argv) {
   SCHEDULE (tree);
   SCHEDULE (indicator);
   SCHEDULE (policy);
+  SCHEDULE (keys);
   SCHEDULE (vector);
   SCHEDULE (rank);
   SCHEDULE (sort);

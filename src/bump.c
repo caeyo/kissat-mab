@@ -58,7 +58,14 @@ void kissat_rescale_scores (kissat *solver) {
                 new_pseudo);
 }
 
+// UCB on VSIDS scores records the increment at assignment of the literals
+// assigned since its last record before the increment changes (see
+// 'keys.h').
+
 void kissat_bump_score_increment (kissat *solver) {
+#ifndef HEAPARGMAX
+  kissat_record_keys (solver);
+#endif
   const double old_scinc = solver->scinc;
   const double decay = GET_OPTION (decay) * 1e-3;
   assert (0 <= decay), assert (decay <= 0.5);
@@ -76,7 +83,7 @@ static inline void bump_analyzed_variable_score (kissat *solver,
   const double inc = solver->scinc;
   const double new_score = old_score + inc;
   LOG ("new score[%u] = %g = %g + %g", idx, new_score, old_score, inc);
-  kissat_update_score (solver, idx, new_score);
+  kissat_bump_score (solver, idx, new_score);
   if (new_score > MAX_SCORE)
     kissat_rescale_scores (solver);
 }

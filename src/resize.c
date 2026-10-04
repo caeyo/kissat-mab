@@ -74,6 +74,7 @@ void kissat_increase_size (kissat *solver, unsigned new_size) {
   CREALLOC_VARIABLE_INDEXED (uint64_t, last_conflict);
   kissat_resize_tree (solver, &solver->policy.tree, new_size);
   kissat_resize_indicator (solver, &solver->policy.uniform, new_size);
+  kissat_resize_keys (solver, new_size);
 #endif
   kissat_increase_phases (solver, new_size);
 
@@ -111,6 +112,7 @@ void kissat_decrease_size (kissat *solver) {
   NREALLOC_VARIABLE_INDEXED (uint64_t, last_conflict);
   kissat_resize_tree (solver, &solver->policy.tree, new_size);
   kissat_resize_indicator (solver, &solver->policy.uniform, new_size);
+  kissat_resize_keys (solver, new_size);
 #endif
   kissat_decrease_phases (solver, new_size);
 

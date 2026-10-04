@@ -92,6 +92,9 @@ void kissat_backtrack_without_updating_phases (kissat *solver,
 #ifndef HEAPARGMAX
     // Under CHB the leaves of the paid variables are refreshed here.
     kissat_defer_policy_sums (solver, old_end - new_end);
+    // UCB on VSIDS scores needs the increment at every literal's
+    // assignment (see 'keys.h').
+    kissat_record_keys (solver);
 #endif
     for (const unsigned *p = q; p != old_end; p++) {
       const unsigned lit = *p;
@@ -139,7 +142,7 @@ void kissat_backtrack_without_updating_phases (kissat *solver,
   }
   SET_END_OF_ARRAY (solver->trail, q);
 #ifndef HEAPARGMAX
-  kissat_chb_shrink_trail (solver, q - trail);
+  kissat_policy_shrink_trail (solver, q - trail);
 #endif
 
   solver->level = new_level;

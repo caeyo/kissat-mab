@@ -51,7 +51,7 @@
   OPTION (emaslow, 1e5, 100, 1e6, "slow exponential moving average window") \
   EMBOPT (embedded, 1, 0, 1, "parse and apply embedded options") \
   OPTION (equivalences, 1, 0, 1, "extract and eliminate equivalence gates") \
-  TREEOPT (etalog2, 0, -16, 16, "softmax eta = 2^etalog2 (with softmax=1)") \
+  TREEOPT (etalog2, 0, -16, 16, "eta = 2^etalog2 (softmax=1, perturbed=1)") \
   OPTION (extract, 1, 0, 1, "extract gates in variable elimination") \
   OPTION (factor, 1, 0, 1, "bounded variable addition") \
   OPTION (factorcandrounds, 2, 0, INT_MAX, "candidates reduction rounds") \
@@ -89,6 +89,7 @@
   OPTION (modeinit, 1e3, 10, 1e8, "initial focused conflicts limit") \
   OPTION (modeint, 1e3, 10, 1e8, "focused conflicts interval") \
   OPTION (otfs, 1, 0, 1, "on-the-fly strengthening") \
+  TREEOPT (perturbed, 0, 0, 1, "perturbed leader per episode (P1)") \
   OPTION (phase, 1, 0, 1, "initial decision phase") \
   OPTION (phasesaving, 1, 0, 1, "enable phase saving") \
   TREEOPT (policyseed, 0, 0, INT_MAX, "random seed of the decision policy") \
@@ -113,6 +114,7 @@
   OPTION (randecint, 500, 0, INT_MAX, "initial random decisions interval") \
   OPTION (randeclength, 10, 1, INT_MAX, "random conflicts length") \
   OPTION (randecstable, 0, 0, 1, "random decisions in stable mode") \
+  TREEOPT (redraw, 0, 0, 1, "P1 and TS draw at restarts (0) or rephases (1)") \
   OPTION (reduce, 1, 0, 1, "learned clause reduction") \
   OPTION (reducehigh, 900, 0, 1000, "high reduce fraction per mille") \
   OPTION (reduceinit, 1e3, 2, 1e5, "initial reduce interval") \
@@ -157,6 +159,8 @@
   OPTION (sweeprand, 0, 0, 1, "randomize sweeping environment") \
   OPTION (sweepvars, 256, 0, INT_MAX, "environment variables") \
   OPTION (target, TARGET_DEFAULT, 0, 2, "target phases (1=stable,2=focused)") \
+  TREEOPT (thompson, 0, 0, 1, "Thompson sampling per episode (TS)") \
+  TREEOPT (thompsonkappa, 0, 0, 1e6, "TS kappa in per mille") \
   OPTION (tier1, 2, 1, 100, "learned clause tier one glue limit") \
   OPTION (tier1relative, 500, 0, 1000, "relative tier one glue limit") \
   OPTION (tier2, 6, 1, 1e3, "learned clause tier two glue limit") \
@@ -165,6 +169,8 @@
   OPTION (transitiveeffort, 20, 0, 2e3, "effort in per mille") \
   OPTION (transitivekeep, 1, 0, 1, "keep transitivity candidates") \
   OPTION (tumble, 1, 0, 1, "tumbled external indices order") \
+  TREEOPT (ucb, 0, 0, 1, "upper confidence bounds (UCB)") \
+  TREEOPT (ucbc, 0, 0, 1e6, "UCB c in per mille") \
   NQTOPT (verbose, 0, 0, 3, "verbosity level") \
   OPTION (vivify, 1, 0, 1, "vivify clauses") \
   OPTION (vivifyeffort, 100, 0, 1e3, "effort in per mille") \

@@ -212,12 +212,14 @@ static void compact_scores (kissat *solver, heap *old_scores,
 
 #ifndef HEAPARGMAX
 
-// Moves every score, last conflict (CHB) and leaf of the policy tree, and
-// with mixing of the indicator tree, to the variable's new index, as
-// 'compact_scores' does for the heap.  Indices only decrease and the loop
-// goes up, so nothing is overwritten before it is moved.  Leaves of the
-// variables that disappear are absent (they are inactive), and leaves
-// beyond the new number of variables are made absent.
+// Moves every score, last conflict (CHB) and leaf of the policy tree, with
+// mixing of the indicator tree, and under P1, TS and UCB their terms and
+// counts, to the variable's new index, as 'compact_scores' does for the
+// heap.  Indices only decrease and the loop goes up, so nothing is
+// overwritten before it is moved.  Leaves of the variables that disappear
+// are absent (they are inactive), and leaves beyond the new number of
+// variables are made absent.  The trail is compacted too, so UCB records
+// it again from its start (see 'keys.h').
 
 static void compact_policy (kissat *solver, unsigned vars) {
   LOG ("compacting scores and policy tree");
@@ -225,6 +227,7 @@ static void compact_policy (kissat *solver, unsigned vars) {
   uint64_t *const last_conflict = solver->last_conflict;
   tree *const tree = &solver->policy.tree;
   indicator *const uniform = &solver->policy.uniform;
+  keys *const keys = &solver->policy.keys;
   const bool mixing = uniform->enabled;
   for (all_variables (idx)) {
     const unsigned midx = map_idx (solver, idx);
@@ -239,6 +242,7 @@ static void compact_policy (kissat *solver, unsigned vars) {
     kissat_tree_move (tree, idx, midx);
     if (mixing)
       kissat_indicator_move (uniform, idx, midx);
+    kissat_move_keys (keys, idx, midx);
   }
   for (unsigned idx = vars; idx < VARS; idx++) {
     score[idx] = 0;
@@ -246,7 +250,9 @@ static void compact_policy (kissat *solver, unsigned vars) {
     kissat_tree_put (tree, idx, TREE_ABSENT, -INFINITY);
     if (mixing)
       kissat_indicator_put (uniform, idx, false);
+    kissat_clear_keys (keys, idx);
   }
+  keys->counted = 0;
   kissat_rebuild_tree (tree);
   if (mixing)
     kissat_rebuild_indicator (uniform);

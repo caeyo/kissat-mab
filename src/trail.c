@@ -1,7 +1,7 @@
 #include "trail.h"
 #include "backtrack.h"
-#include "chb.h"
 #include "inline.h"
+#include "inlinepolicy.h"
 #include "propsearch.h"
 
 void kissat_flush_trail (kissat *solver) {
@@ -13,7 +13,7 @@ void kissat_flush_trail (kissat *solver) {
   LOG ("flushed %zu units from trail", SIZE_ARRAY (solver->trail));
   CLEAR_ARRAY (solver->trail);
 #ifndef HEAPARGMAX
-  kissat_chb_shrink_trail (solver, 0);
+  kissat_policy_shrink_trail (solver, 0);
 #endif
   kissat_reset_propagate (solver);
   solver->unflushed = 0;

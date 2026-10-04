@@ -70,6 +70,13 @@
 // variable's ERWA value Q: it starts at zero at activation, there is no
 // pseudo-activity, and CHB pays it after every search propagation, to the
 // variables the propagation assigned (see above for their leaves).
+//
+// Under P1, TS and UCB (tree builds, see 'keys.h') a leaf holds the
+// variable's key, its score combined with a term of the policy's own,
+// instead of its score ('kissat_policy_key').  Bumps go through
+// 'kissat_bump_score', where TS recomputes the term, CHB's payments count
+// observations for UCB and TS, and UCB recomputes a variable's term when
+// stable-mode backtracking unassigns it.
 
 #include "chb.h"
 #include "internal.h"
@@ -150,8 +157,16 @@ static inline void kissat_end_bulk_score_change (kissat *solver) {
   (void) solver;
 }
 
+// A bump of 'idx' to 'score' (stable mode, VSIDS scores).
+
+static inline void kissat_bump_score (kissat *solver, unsigned idx,
+                                      double score) {
+  kissat_update_score (solver, idx, score);
+}
+
 #else
 
+#include "bump.h"
 #include "inlinetree.h"
 #include "internal.h"
 #include "logging.h"
@@ -181,15 +196,51 @@ static inline double kissat_policy_log2_weight (const policy *policy,
   return ldexp (log2 (score), policy->etalog2);
 }
 
+// The key of 'idx' in the tree: its score, or under P1, TS and UCB its
+// score with the variable's term (see 'keys.h'): s * e^x on VSIDS scores,
+// where 'term' holds e^x and a score of zero keeps key zero, and Q + x on
+// CHB scores, where 'term' holds x.
+
+static inline double kissat_policy_key (kissat *solver, unsigned idx) {
+  const double score = solver->score[idx];
+  const policy *const policy = &solver->policy;
+  if (!policy->keys.kind)
+    return score;
+  const double term = policy->keys.term[idx];
+  if (policy->chb)
+    return score + term;
+  return score > 0 ? score * term : 0;
+}
+
+// The terms of TS and UCB (see 'keys.h'), as 'term' holds them: TS's for
+// the evidence 'evidence' of 'idx' (S on VSIDS scores, N on CHB scores),
+// UCB's for 'count' observations.
+
+static inline double kissat_thompson_term (const policy *policy,
+                                           unsigned idx, double evidence) {
+  const keys *const keys = &policy->keys;
+  assert (keys->kind == KEYS_THOMPSON);
+  const double x =
+      keys->factor * keys->normal[idx] / sqrt (KEYS_PRIOR + evidence);
+  return policy->chb ? x : exp (x);
+}
+
+static inline double kissat_ucb_term (const policy *policy, double count) {
+  const keys *const keys = &policy->keys;
+  assert (keys->kind == KEYS_UCB);
+  const double x = keys->scale / sqrt (KEYS_PRIOR + count);
+  return policy->chb ? x : exp (x);
+}
+
 // The key and, in a weighted tree, the weight of an available variable.
 
 static inline void kissat_policy_set_leaf (kissat *solver, unsigned idx) {
   policy *const policy = &solver->policy;
   tree *const tree = &policy->tree;
-  const double score = solver->score[idx];
+  const double key = kissat_policy_key (solver, idx);
   const double log2_weight =
-      tree->weighted ? kissat_policy_log2_weight (policy, score) : 0;
-  kissat_tree_set (tree, idx, score, log2_weight);
+      tree->weighted ? kissat_policy_log2_weight (policy, key) : 0;
+  kissat_tree_set (tree, idx, key, log2_weight);
 }
 
 // The same without recomputing the ancestors, for rebuilds.
@@ -197,10 +248,10 @@ static inline void kissat_policy_set_leaf (kissat *solver, unsigned idx) {
 static inline void kissat_policy_put_leaf (kissat *solver, unsigned idx) {
   policy *const policy = &solver->policy;
   tree *const tree = &policy->tree;
-  const double score = solver->score[idx];
+  const double key = kissat_policy_key (solver, idx);
   const double log2_weight =
-      tree->weighted ? kissat_policy_log2_weight (policy, score) : 0;
-  kissat_tree_put (tree, idx, score, log2_weight);
+      tree->weighted ? kissat_policy_log2_weight (policy, key) : 0;
+  kissat_tree_put (tree, idx, key, log2_weight);
 }
 
 static inline void kissat_update_score (kissat *solver, unsigned idx,
@@ -259,6 +310,9 @@ static inline double kissat_max_score (kissat *solver) {
   return res;
 }
 
+// UCB's counts on VSIDS scores are kept in units of the score increment,
+// and are rescaled with the scores, as are the increments at assignment.
+
 static inline void kissat_scale_scores (kissat *solver, double factor) {
   LOG ("rescaling scores with factor %g", factor);
   double *const score = solver->score;
@@ -267,14 +321,106 @@ static inline void kissat_scale_scores (kissat *solver, double factor) {
 #ifdef SHADOW
   kissat_rescale_heap (solver, SCORES, factor);
 #endif
+  if (solver->policy.keys.intervals)
+    kissat_rescale_keys (solver, factor);
   if (!solver->policy.bulk)
     kissat_rebuild_policy (solver);
+}
+
+// UCB on VSIDS scores: the literals assigned since the last record get the
+// current score increment, the one they were assigned at, since it has
+// not changed since (see 'keys.h').  Called before the increment changes,
+// before every stable-mode backtrack and when stable mode is left.
+
+static inline void kissat_record_keys (kissat *solver) {
+  keys *const keys = &solver->policy.keys;
+  if (!keys->intervals)
+    return;
+  const unsigned size = SIZE_ARRAY (solver->trail);
+  unsigned counted = keys->counted;
+  if (counted >= size)
+    return;
+  const unsigned *const trail = BEGIN_ARRAY (solver->trail);
+  double *const opened = keys->opened;
+  const double inc = solver->scinc;
+  while (counted < size) {
+    const unsigned lit = trail[counted++];
+    opened[IDX (lit)] = inc;
+  }
+  keys->counted = size;
+}
+
+// The trail was shrunk to 'size' literals: CHB's paid position and UCB's
+// recorded position follow it down.
+
+static inline void kissat_policy_shrink_trail (kissat *solver,
+                                               unsigned size) {
+  kissat_chb_shrink_trail (solver, size);
+  unsigned *const counted = &solver->policy.keys.counted;
+  if (*counted > size)
+    *counted = size;
+}
+
+// P1, TS and UCB: backtracking in stable mode unassigned 'idx'.  On VSIDS
+// scores UCB adds the increments of the bump rounds since its assignment
+// to its count, and on either line recomputes its term.  The leaf is set
+// if a pick removed it, or if its key changed: by UCB's term, or on CHB
+// scores by payments while the variable was assigned.
+
+static inline void kissat_keys_unassign (kissat *solver, unsigned idx) {
+  policy *const policy = &solver->policy;
+  keys *const keys = &policy->keys;
+  if (keys->kind == KEYS_UCB) {
+    double inc;
+    if (policy->chb)
+      inc = keys->increment;
+    else {
+      inc = solver->scinc;
+      assert (keys->intervals);
+      assert (solver->assigned[idx].trail < keys->counted);
+      keys->count[idx] += (inc - keys->opened[idx]) / (keys->growth - 1);
+    }
+    keys->term[idx] = kissat_ucb_term (policy, keys->count[idx] / inc);
+  }
+  tree *const tree = &policy->tree;
+  assert (!tree->weighted);
+  const double key = kissat_policy_key (solver, idx);
+  if (!kissat_tree_contains (tree, idx) ||
+      kissat_tree_key (tree, idx) != key)
+    kissat_tree_set (tree, idx, key, 0);
+}
+
+// CHB's payment of 'idx' under UCB and TS: an observation, counted with
+// the counts' current increment, and TS's term follows the new count.  As
+// for the score, the leaf takes the new key when backtracking unassigns
+// the variable.
+
+static inline void kissat_keys_paid (kissat *solver, unsigned idx) {
+  policy *const policy = &solver->policy;
+  keys *const keys = &policy->keys;
+  assert (keys->counts);
+  const double inc = keys->increment;
+  const double count = keys->count[idx] += inc;
+  if (keys->kind == KEYS_THOMPSON)
+    keys->term[idx] = kissat_thompson_term (policy, idx, count / inc);
+}
+
+// A stable-mode conflict on CHB scores, after its payments: the counts'
+// increment grows by 1/d.
+
+static inline void kissat_keys_chb_conflict (kissat *solver) {
+  keys *const keys = &solver->policy.keys;
+  assert (keys->counts);
+  keys->increment *= keys->growth;
+  if (keys->increment > MAX_SCORE)
+    kissat_rescale_chb_counts (solver);
 }
 
 // Backtracking in stable mode unassigned 'idx'.  The tree and, with
 // mixing, the indicator tree get it back if a draw of theirs removed it.
 // Under CHB a leaf the tree kept is refreshed if it lags the score, which
-// CHB's payments changed while the variable was assigned.
+// CHB's payments changed while the variable was assigned.  P1, TS and UCB
+// compare the leaf with the variable's key instead.
 
 static inline void kissat_policy_unassign (kissat *solver, unsigned idx) {
   assert (!solver->policy.bulk);
@@ -285,16 +431,19 @@ static inline void kissat_policy_unassign (kissat *solver, unsigned idx) {
 #endif
   policy *const policy = &solver->policy;
   const tree *const tree = &policy->tree;
-  if (!kissat_tree_contains (tree, idx) ||
-      (kissat_chb (solver) &&
-       kissat_tree_key (tree, idx) != solver->score[idx]))
+  if (policy->keys.kind)
+    kissat_keys_unassign (solver, idx);
+  else if (!kissat_tree_contains (tree, idx) ||
+           (kissat_chb (solver) &&
+            kissat_tree_key (tree, idx) != solver->score[idx]))
     kissat_policy_set_leaf (solver, idx);
   indicator *const uniform = &policy->uniform;
   if (uniform->enabled && !kissat_indicator_contains (uniform, idx))
     kissat_indicator_insert (uniform, idx);
 }
 
-// 'idx' was activated in stable mode and is unassigned.
+// 'idx' was activated in stable mode and is unassigned.  Under P1 and TS
+// it draws, and under UCB gets its term, before its leaf is set.
 
 static inline void kissat_policy_activate (kissat *solver, unsigned idx) {
   assert (!solver->policy.bulk);
@@ -303,6 +452,8 @@ static inline void kissat_policy_activate (kissat *solver, unsigned idx) {
 #endif
   policy *const policy = &solver->policy;
   assert (!kissat_tree_contains (&policy->tree, idx));
+  if (policy->keys.kind)
+    kissat_activate_keys (solver, idx);
   kissat_policy_set_leaf (solver, idx);
   indicator *const uniform = &policy->uniform;
   if (uniform->enabled)
@@ -336,6 +487,30 @@ static inline void kissat_end_bulk_score_change (kissat *solver) {
   assert (solver->policy.bulk);
   solver->policy.bulk = false;
   kissat_rebuild_policy (solver);
+}
+
+// A bump of 'idx' to 'score' (stable mode, VSIDS scores).  Under TS the
+// variable's term follows the new score, S = score / inc, first, and its
+// leaf follows the term even if the increment was too small to change the
+// score.
+
+static inline void kissat_bump_score (kissat *solver, unsigned idx,
+                                      double score) {
+  policy *const policy = &solver->policy;
+  if (policy->keys.kind == KEYS_THOMPSON) {
+    assert (!policy->chb);
+    assert (!policy->bulk);
+    double *const term = policy->keys.term + idx;
+    const double new_term =
+        kissat_thompson_term (policy, idx, score / solver->scinc);
+    if (*term != new_term) {
+      *term = new_term;
+      if (solver->score[idx] == score &&
+          kissat_tree_contains (&policy->tree, idx))
+        kissat_policy_set_leaf (solver, idx);
+    }
+  }
+  kissat_update_score (solver, idx, score);
 }
 
 #define POLICY_DEFER_SUMS 32

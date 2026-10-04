@@ -107,18 +107,48 @@ static unsigned tree_argmax_pick (kissat *solver) {
   LOG ("largest score unassigned %s score %g", LOGVAR (res), score);
 #ifdef CHECK_HEAP
   // Brute-force check of the argmax and of its tie-breaking ('--check-heap'
-  // checks the policy structure of tree builds too).
+  // checks the policy structure of tree builds too), over the keys of P1,
+  // TS and UCB, which are the scores under Argmax and Sample.
   for (all_variables (idx)) {
     if (!ACTIVE (idx))
       continue;
     if (VALUE (LIT (idx)))
       continue;
-    const double idx_score = kissat_get_score (solver, idx);
+    const double idx_score = kissat_policy_key (solver, idx);
     if (idx < res)
       assert (score > idx_score);
     else
       assert (score >= idx_score);
   }
+#endif
+  return res;
+}
+
+// Counts a fallback to Argmax's choice and the bump round of the first.
+
+static void count_fallback (kissat *solver) {
+  policy *const policy = &solver->policy;
+  if (!(policy->count.fallbacks[0] | policy->count.fallbacks[1]))
+    policy->count.first = solver->estimator.rounds;
+  policy->count.fallbacks[solver->warming]++;
+}
+
+// P1, TS and UCB: the tree's maximum over their keys (see 'keys.h').  On
+// VSIDS scores a key of zero means that every unassigned variable has
+// score zero, and the pick, the smallest index, is Argmax's choice and
+// counts as a fallback.
+
+static unsigned keyed_pick (kissat *solver) {
+  const unsigned res = tree_argmax_pick (solver);
+  const policy *const policy = &solver->policy;
+  if (policy->chb || kissat_tree_key (&policy->tree, res))
+    return res;
+  count_fallback (solver);
+  LOG ("no positive key left: falling back to the smallest index");
+#ifdef CHECK_HEAP
+  for (all_variables (idx))
+    if (ACTIVE (idx) && !VALUE (LIT (idx)))
+      assert (!kissat_policy_key (solver, idx));
 #endif
   return res;
 }
@@ -146,9 +176,7 @@ static unsigned tree_sample_pick (kissat *solver) {
     }
     kissat_tree_remove (tree, res);
   }
-  if (!(policy->count.fallbacks[0] | policy->count.fallbacks[1]))
-    policy->count.first = solver->estimator.rounds;
-  policy->count.fallbacks[solver->warming]++;
+  count_fallback (solver);
   LOG ("no positive weight left: falling back to the maximum");
 #ifdef CHECK_HEAP
   for (all_variables (idx))
@@ -190,13 +218,15 @@ static void shadow_check_tree (kissat *);
 // Under Argmax, HeapArgmax's pick on the shadow heap must find the largest
 // score the tree finds.  The two may pick different variables of that
 // score, since the heap breaks ties by its history and the tree by
-// variable index.  Under Sample the pick is not the maximum, nor is a
-// uniform pick of mixing ('uniform'), and only the complete checks run.
+// variable index.  So must TS and UCB without noise, whose keys are the
+// scores.  Under Sample and P1, TS and UCB with noise the pick is not the
+// maximum score, nor is a uniform pick of mixing ('uniform'), and only the
+// complete checks run.
 
 static void shadow_pick (kissat *solver, unsigned res, bool uniform) {
   policy *const policy = &solver->policy;
   const uint64_t pick = ++policy->shadow.picks;
-  if (!policy->tree.weighted && !uniform) {
+  if (!policy->tree.weighted && !policy->keys.noise && !uniform) {
     heap *const scores = SCORES;
     const value *const values = solver->values;
     policy->shadow.compared++;
@@ -229,11 +259,13 @@ static void shadow_pick (kissat *solver, unsigned res, bool uniform) {
 
 // Every leaf against the estimator, the heap and the assignment; every
 // internal node against its children.  A leaf's key must be its variable's
-// score, except under CHB for an assigned variable, whose leaf may lag the
-// score (see 'kissat_update_assigned_score').  In a weighted tree every
-// leaf's weight must be the one its key gives, and an absent leaf's zero.
-// With mixing, the indicator tree holds only active variables and every
-// unassigned one, and every count is the sum of its children's.
+// score, or under P1, TS and UCB the key its score and the policy's term
+// give ('kissat_policy_key'), except under CHB for an assigned variable,
+// whose leaf may lag (see 'kissat_update_assigned_score').  In a weighted
+// tree every leaf's weight must be the one its key gives, and an absent
+// leaf's zero.  With mixing, the indicator tree holds only active
+// variables and every unassigned one, and every count is the sum of its
+// children's.
 
 static void shadow_check_tree (kissat *solver) {
   policy *const policy = &solver->policy;
@@ -273,10 +305,12 @@ static void shadow_check_tree (kissat *solver) {
                       "%u in the tree",
                       pick, idx);
       const double k = kissat_tree_key (tree, idx);
-      if (!kissat_same_double (k, s) && (available || !chb))
+      const double e = kissat_policy_key (solver, idx);
+      if (!kissat_same_double (k, e) && (available || !chb))
         kissat_fatal ("shadow mode: pick %" PRIu64 ": leaf key %.17g of "
-                      "variable %u differs from its score %.17g",
-                      pick, k, idx, s);
+                      "variable %u differs from its key %.17g (score "
+                      "%.17g)",
+                      pick, k, idx, e, s);
       if (tree->weighted) {
         const tree_weight w = kissat_tree_weight (tree, idx);
         const tree_weight e = kissat_tree_weight_of_log2 (
@@ -357,7 +391,8 @@ void kissat_print_shadow_statistics (kissat *solver) {
 #endif
 
 // With mixing, a coin decides between a uniform pick (heads) and the pick
-// of Argmax or Sample; without, no coin is tossed.
+// of Argmax or Sample; without, no coin is tossed.  P1, TS and UCB do not
+// mix.
 
 unsigned kissat_policy_pick (kissat *solver) {
   assert (solver->stable);
@@ -373,9 +408,12 @@ unsigned kissat_policy_pick (kissat *solver) {
   if (uniform) {
     policy->count.uniform[warming]++;
     res = uniform_pick (solver);
-  } else
-    res = policy->tree.weighted ? tree_sample_pick (solver)
-                                : tree_argmax_pick (solver);
+  } else if (policy->tree.weighted)
+    res = tree_sample_pick (solver);
+  else if (policy->keys.kind)
+    res = keyed_pick (solver);
+  else
+    res = tree_argmax_pick (solver);
 #ifdef SHADOW
   shadow_pick (solver, res, uniform);
 #endif
@@ -399,7 +437,9 @@ unsigned kissat_policy_peek (kissat *solver) {
 // the trees, which are functions of their leaves.  Under CHB the tree is
 // rebuilt even if no variable was added: focused mode unassigns variables
 // without the policy's hooks, so leaves that lagged their scores when
-// stable mode was left may belong to unassigned variables now.
+// stable mode was left may belong to unassigned variables now.  For P1, TS
+// and UCB entering stable mode is a draw point, which rebuilds the tree,
+// and the variables assigned now open UCB's intervals (see 'keys.h').
 
 void kissat_update_scores (kissat *solver) {
   assert (solver->stable);
@@ -409,14 +449,18 @@ void kissat_update_scores (kissat *solver) {
     if (ACTIVE (idx) && !kissat_heap_contains (scores, idx))
       kissat_push_heap (solver, scores, idx);
 #endif
-  tree *const tree = &solver->policy.tree;
+  policy *const policy = &solver->policy;
+  tree *const tree = &policy->tree;
   bool added = false;
   for (all_variables (idx))
     if (ACTIVE (idx) && !kissat_tree_contains (tree, idx)) {
       kissat_policy_put_leaf (solver, idx);
       added = true;
     }
-  if (added || kissat_chb (solver))
+  if (policy->keys.kind) {
+    policy->keys.counted = 0;
+    kissat_draw_keys (solver);
+  } else if (added || kissat_chb (solver))
     kissat_rebuild_policy (solver);
   indicator *const uniform = &solver->policy.uniform;
   if (!uniform->enabled)
@@ -431,11 +475,12 @@ void kissat_update_scores (kissat *solver) {
     kissat_rebuild_indicator (uniform);
 }
 
-// Frees the tree and the indicator tree.
+// Frees the tree, the indicator tree and the arrays of P1, TS and UCB.
 
 void kissat_release_policy (kissat *solver) {
   kissat_release_tree (solver, &solver->policy.tree);
   kissat_release_indicator (solver, &solver->policy.uniform);
+  kissat_release_keys (solver);
 }
 
 // Present leaves take their keys and weights from the estimator again,
@@ -535,12 +580,17 @@ void kissat_sample_decision (kissat *solver, unsigned idx, bool random) {
   // decision is that.  With mixing, 'top_p' is the probability of Argmax's
   // choice, which under Sample every variable of the largest score shares,
   // while under Argmax and at a fallback the other ones have 'uniform'.
+  // Given their draws, P1, TS and UCB put all mass on the decision.
   const double gamma = random ? 0 : policy->gamma;
   double entropy = 0, differ = 0, lower = 0;
   if (random) {
     entropy = log (arms);
     differ = 1 - 1.0 / arms;
     lower = 1 - (double) ties / arms;
+  } else if (policy->keys.kind) {
+    assert (!gamma);
+    differ = idx != argmax;
+    lower = score[idx] < largest;
   } else if (softmax && sum && !gamma) {
     const double ln2 = 0.69314718055994530942;
     entropy = log (sum) - ln2 * moment / sum;
@@ -617,7 +667,9 @@ static void start_mixing (kissat *solver, unsigned gammappm) {
 
 // Seeds the generator and fixes the policy.  Sample weighs the tree, which
 // at this point may already hold variables ('kissat_update_scores' with
-// '--stable=2').  The clock of the decision metrics starts here.
+// '--stable=2').  P1, TS and UCB, if selected, start with a draw point if
+// the search starts in stable mode (see 'keys.h').  The clock of the
+// decision metrics starts here.
 
 void kissat_start_policy (kissat *solver) {
   policy *const policy = &solver->policy;
@@ -630,6 +682,7 @@ void kissat_start_policy (kissat *solver) {
   LOG ("initialized policy random number generator with seed %u", seed);
   if (kissat_chb (solver))
     kissat_very_verbose (solver, "CHB scores in stable mode");
+  kissat_start_keys (solver);
   const unsigned gammappm = GET_OPTION (gammappm);
   if (gammappm && !policy->uniform.enabled)
     start_mixing (solver, gammappm);
@@ -657,6 +710,8 @@ void kissat_print_policy_statistics (kissat *solver) {
                   policy->count.uniform[0]);
   kissat_message (solver, "policy-warmup-uniform-picks %" PRIu64,
                   policy->count.uniform[1]);
+  kissat_message (solver, "policy-draw-points %" PRIu64,
+                  policy->keys.draws);
   if (policy->count.fallbacks[0] | policy->count.fallbacks[1])
     kissat_message (solver, "policy-first-fallback-round %" PRIu64,
                     policy->count.first);
@@ -690,6 +745,8 @@ void kissat_print_policy_statistics (kissat *solver) {
   }
   kissat_message (solver, "policy-metrics-seconds %.9g",
                   hz ? policy->clock.ticks / hz : 0);
+  kissat_message (solver, "policy-draw-seconds %.9g",
+                  hz ? policy->keys.ticks / hz : 0);
   kissat_message (solver, "policy-clock-hz %.9g", hz);
 #endif
 #else

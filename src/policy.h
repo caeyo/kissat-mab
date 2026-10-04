@@ -54,6 +54,18 @@
 //   ('chb=1', see 'chb.h') the weight of a score Q is exp (eta * Q),
 //   given as eta * Q * log2 (e): at least one, so there is no fallback.
 //
+// Three more policies decide by the tree's maximum, as Argmax does, over
+// keys of their own instead of the scores (see 'keys.h'), and keep no
+// weights: P1, the perturbed leader per episode ('perturbed=1', at eta =
+// 2^etalog2), TS, Thompson sampling with the sample held for an episode
+// ('thompson=1', option 'thompsonkappa'), and UCB, upper confidence bounds
+// ('ucb=1', option 'ucbc').  P1 and TS draw at draw points (the start of
+// the search in stable mode, every entry to stable mode, and every
+// stable-mode restart or, with 'redraw=1', every rephase), and UCB
+// recomputes its keys at every stable-mode restart and entry to stable
+// mode.  At most one of 'softmax', 'perturbed', 'thompson' and 'ucb' is
+// set, none of the last three with mixing, and P1 only on VSIDS scores.
+//
 // Uniform mixing (option 'gammappm', read at the start of the search):
 // with gamma = gammappm / 10^6 positive, every pick first tosses a coin
 // that shows heads with probability gamma, and on heads the pick is a
@@ -72,8 +84,8 @@
 // Kissat's generator, and toss no coin.
 //
 // The policy owns a random generator, seeded from the option 'policyseed'
-// at the start of the search, for the draws of Sample and the coins and
-// uniform draws of mixing (Argmax without mixing draws nothing); no other
+// at the start of the search, for the draws of Sample, P1 and TS and the
+// coins and uniform draws of mixing (Argmax and UCB draw nothing); no other
 // code draws from it, so the random streams of the rest of the solver do
 // not depend on the policy.  Without mixing no coin is tossed, so the
 // draws of Sample are those of a build without mixing.
@@ -89,14 +101,16 @@
 // distribution the decision was drawn from, over the unassigned active
 // variables: Argmax's, and Sample's at a fallback, puts all mass on
 // Argmax's choice (the variable of largest score and smallest index), a
-// burst's is uniform, and Sample's is the softmax of its weights.  With
+// burst's is uniform, and Sample's is the softmax of its weights.  Given
+// their draws, a pick of P1, TS or UCB is a point mass on its choice.  With
 // mixing, a pick's distribution is (1 - gamma) times that of Argmax or
 // Sample plus gamma times the uniform one, which under Sample takes a
 // second pass.  A sample adds the distribution's entropy, the probability
 // it gives to a variable other than Argmax's choice and to a score below
-// the largest, and whether the decision made was either.  The metrics
-// only read the solver's state and draw nothing, so no decision depends on
-// them.  They are compiled into every tree build, the builds the
+// the largest, and whether the decision made was either.  Draw points are
+// counted and timed too.  The metrics only read the solver's state and
+// draw nothing, so no decision depends on them.  Apart from the count of
+// draw points, they are compiled into every tree build, the builds the
 // experiments run, unless './configure --no-decision-metrics'
 // ('-DNDECISIONMETRICS') leaves them out, for builds that must carry no
 // instrumentation (profiling, a competition entry).
@@ -113,13 +127,15 @@
 // with every score change and availability change applied to both.  Under
 // Argmax, at every pick the largest score on the heap (popping assigned
 // variables as HeapArgmax does) must equal the largest score in the tree
-// bitwise; with mixing, at every pick that is Argmax's choice (tails).
-// Under both policies, every 1000 picks the whole tree (keys, weights and
-// internal nodes) is checked against the estimator, the heap and the
-// assignment, and with mixing the indicator tree against the assignment;
-// under CHB the key of an assigned variable's leaf may lag its score, and
-// its weight is checked against its key.  A failed check is a fatal
-// error.
+// bitwise; with mixing, at every pick that is Argmax's choice (tails);
+// under TS and UCB without noise (factor zero), whose keys are the scores,
+// at every pick too.  Under every policy, every 1000 picks the whole tree
+// (keys, weights and internal nodes) is checked against the estimator, the
+// heap and the assignment, and with mixing the indicator tree against the
+// assignment: a leaf's key must be the variable's score, or under P1, TS
+// and UCB its key from the score and the policy's term; under CHB the key
+// of an assigned variable's leaf may lag, and its weight is checked
+// against its key.  A failed check is a fatal error.
 
 #if defined(HEAPARGMAX) && defined(SHADOW)
 #error "'HEAPARGMAX' and 'SHADOW' exclude each other"
@@ -171,6 +187,7 @@ struct estimator {
 #ifndef HEAPARGMAX
 
 #include "indicator.h"
+#include "keys.h"
 #include "random.h"
 #include "tree.h"
 
@@ -210,13 +227,15 @@ struct policy_metrics {
 #endif
 
 struct policy {
-  tree tree;         // the available variables, their scores and weights
+  tree tree;         // the available variables, their keys and weights
   indicator uniform; // mixing: the available variables, drawn uniformly
+  keys keys;         // P1, TS and UCB: their terms and counts
   generator random;  // the policy's own generator
   double gamma;      // mixing: probability of a uniform pick (0: none)
   bool bulk;         // tree updates deferred until a rebuild
-  bool chb;          // Sample: weights exp (eta * Q) of CHB scores Q
-  int etalog2;       // Sample: eta = 2^etalog2 (tree weighted)
+  bool chb;          // CHB scores Q: Sample's weights exp (eta * Q), keys
+                     // Q + x under TS and UCB
+  int etalog2;       // Sample and P1: eta = 2^etalog2
   struct {
     uint64_t picks[2];     // picks in search [0] and in warm-up [1]
     uint64_t fallbacks[2]; // Sample: picks that fell back to Argmax
@@ -292,9 +311,10 @@ void kissat_update_scores (struct kissat *);
 void kissat_print_estimator_statistics (struct kissat *);
 
 // 'kissat_start_policy' is called at the start of the search: it seeds
-// the policy's generator, with 'softmax=1' gives the tree its weights,
-// and with 'gammappm' positive enables the indicator tree, which starts
-// with the variables present in the policy's tree.
+// the policy's generator, selects P1, TS or UCB if one of them is set (see
+// 'keys.h'), with 'softmax=1' gives the tree its weights, and with
+// 'gammappm' positive enables the indicator tree, which starts with the
+// variables present in the policy's tree.
 
 #ifndef HEAPARGMAX
 void kissat_start_policy (struct kissat *);
