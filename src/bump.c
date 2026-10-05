@@ -98,6 +98,9 @@ void kissat_bump_variable (kissat *solver, unsigned idx) {
 
 static void bump_analyzed_variable_scores (kissat *solver) {
   solver->estimator.rounds++;
+#ifdef SHADOW
+  kissat_shadow_round (solver); // recounts UCB's observations
+#endif
   flags *flags = solver->flags;
 
   for (all_stack (unsigned, idx, solver->analyzed))

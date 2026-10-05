@@ -213,6 +213,83 @@ static unsigned uniform_pick (kissat *solver) {
 
 #ifdef SHADOW
 
+// The recount of the observation counts of UCB, and of TS on CHB scores
+// (see 'policy.h'): on VSIDS scores, bump round 'rounds' has just started,
+// and every active variable on the trail is assigned during it, an
+// observation, which weighs d after the round, as the counts weigh it.
+
+void kissat_shadow_round (kissat *solver) {
+  const policy *const policy = &solver->policy;
+  keys *const keys = &solver->policy.keys;
+  if (keys->kind != KEYS_UCB || policy->chb)
+    return;
+  assert (solver->stable);
+  assert (keys->recount), assert (keys->recounted);
+  const uint64_t round = solver->estimator.rounds;
+  const double decay = kissat_shadow_decay (solver);
+  const flags *const flags = solver->flags;
+  double *const recount = keys->recount;
+  uint64_t *const recounted = keys->recounted;
+  const unsigned *const begin = BEGIN_ARRAY (solver->trail);
+  const unsigned *const end = END_ARRAY (solver->trail);
+  for (const unsigned *p = begin; p != end; p++) {
+    const unsigned idx = IDX (*p);
+    if (!flags[idx].active)
+      continue;
+    assert (recounted[idx] < round);
+    if (recount[idx])
+      recount[idx] *= kissat_shadow_power (decay, round - recounted[idx]);
+    recount[idx] += decay;
+    recounted[idx] = round;
+  }
+}
+
+// Every active variable's count against its recount, decayed to the
+// current bump round or conflict.  On VSIDS scores an assigned variable
+// whose assignment is recorded adds the bump rounds since then, as leaving
+// stable mode would add them ('kissat_leave_stable_keys'); one assigned
+// after the last record was assigned at the current increment and adds
+// none.  Nothing is changed.
+
+#define SHADOW_RECOUNT_TOLERANCE 1e-12
+
+static void shadow_check_counts (kissat *solver) {
+  policy *const policy = &solver->policy;
+  const keys *const keys = &policy->keys;
+  const bool chb = policy->chb;
+  const uint64_t now =
+      chb ? solver->estimator.chb.conflicts : solver->estimator.rounds;
+  const double inc = chb ? keys->increment : solver->scinc;
+  const double rounds = keys->growth - 1;
+  const double decay = kissat_shadow_decay (solver);
+  const flags *const flags = solver->flags;
+  const value *const values = solver->values;
+  const assigned *const assigned = solver->assigned;
+  const uint64_t pick = policy->shadow.picks;
+  for (all_variables (idx)) {
+    if (!flags[idx].active)
+      continue;
+    double count = keys->count[idx];
+    if (!chb && values[LIT (idx)] && assigned[idx].trail < keys->counted)
+      count += (inc - keys->opened[idx]) / rounds;
+    const double n = count / inc;
+    assert (keys->recounted[idx] <= now);
+    const double age = now - keys->recounted[idx];
+    const double recount =
+        keys->recount[idx] * kissat_shadow_power (decay, age);
+    const double error = fabs (n - recount) / (1 + recount);
+    policy->shadow.recounts++;
+    if (error > policy->shadow.error)
+      policy->shadow.error = error;
+    if (!(error <= SHADOW_RECOUNT_TOLERANCE))
+      kissat_fatal ("shadow mode: pick %" PRIu64 ": observation count "
+                    "%.17g of variable %u differs from its recount %.17g "
+                    "(%s %" PRIu64 ")",
+                    pick, n, idx, recount,
+                    chb ? "conflict" : "bump round", now);
+  }
+}
+
 static void shadow_check_tree (kissat *);
 
 // Under Argmax, HeapArgmax's pick on the shadow heap must find the largest
@@ -265,7 +342,8 @@ static void shadow_pick (kissat *solver, unsigned res, bool uniform) {
 // tree every leaf's weight must be the one its key gives, and an absent
 // leaf's zero.  With mixing, the indicator tree holds only active
 // variables and every unassigned one, and every count is the sum of its
-// children's.
+// children's.  Under UCB, and TS on CHB scores, every active variable's
+// observation count must equal its recount ('shadow_check_counts').
 
 static void shadow_check_tree (kissat *solver) {
   policy *const policy = &solver->policy;
@@ -359,6 +437,8 @@ static void shadow_check_tree (kissat *solver) {
     kissat_fatal ("shadow mode: pick %" PRIu64 ": tree node %u differs "
                   "from what its children give",
                   pick, node);
+  if (policy->keys.counts)
+    shadow_check_counts (solver);
   if (!uniform->enabled)
     return;
   for (unsigned idx = VARS; idx < uniform->leaves; idx++)
@@ -383,6 +463,10 @@ void kissat_print_shadow_statistics (kissat *solver) {
   kissat_message (solver, "shadow-checks %" PRIu64, policy->shadow.checks);
   kissat_message (solver, "shadow-rebuilds %" PRIu64,
                   policy->shadow.rebuilds);
+  kissat_message (solver, "shadow-recounts %" PRIu64,
+                  policy->shadow.recounts);
+  kissat_message (solver, "shadow-recount-error %.3g",
+                  policy->shadow.error);
 #else
   (void) solver;
 #endif

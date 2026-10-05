@@ -1,6 +1,7 @@
 #include "../src/backtrack.h"
 #include "../src/bump.h"
 #include "../src/chb.h"
+#include "../src/collect.h"
 #include "../src/decide.h"
 #include "../src/error.h"
 #include "../src/inlinepolicy.h"
@@ -439,6 +440,47 @@ static void test_keys_ucb_vsids (void) {
   kissat_release (solver);
 }
 
+// Compaction during the search, with variables assigned, as 'reduce' may
+// compact: it renames the trail's literals in place and moves counts and
+// increments at assignment with their variables, so the bump rounds that
+// the assigned variables spent assigned before it still count when they
+// are unassigned.  Variable 1 is eliminated, so 2 to 7 move down by one.
+
+static void test_keys_ucb_compact (void) {
+  enum { vars = 8 };
+  kissat *solver = kissat_init ();
+#ifndef NDEBUG
+  kissat_set_option (solver, "check", 0);
+#endif
+  kissat_set_option (solver, "ucb", 1);
+  kissat_set_option (solver, "ucbc", 1000);
+  start_solver (solver, vars);
+  double expected[vars] = {0};
+  bool assigned[vars] = {0};
+  kissat_internal_assume (solver, LIT (3)), assigned[3] = true;
+  bump_round (solver, expected, assigned, vars);
+  kissat_internal_assume (solver, LIT (5)), assigned[5] = true;
+  bump_round (solver, expected, assigned, vars);
+  bump_round (solver, expected, assigned, vars);
+  for (all_clauses (c))
+    kissat_mark_clause_as_garbage (solver, c);
+  kissat_mark_eliminated_variable (solver, 1);
+  kissat_sparse_collect (solver, true, 0);
+  assert (VARS == vars - 1);
+  for (unsigned idx = 1; idx + 1 < vars; idx++) {
+    expected[idx] = expected[idx + 1];
+    assigned[idx] = assigned[idx + 1];
+  }
+  assert (VALUE (LIT (2)) && VALUE (LIT (4)));
+  bump_round (solver, expected, assigned, vars - 1);
+  kissat_backtrack_without_updating_phases (solver, 0);
+  bool closed[vars] = {0};
+  closed[2] = closed[4] = true;
+  check_counts (solver, expected, closed, vars - 1);
+  assert (expected[2] > expected[4]), assert (expected[4] > 0);
+  kissat_release (solver);
+}
+
 // UCB and TS on CHB scores: a payment adds the counts' increment, which
 // grows by 1/d after the payments of every conflict.  UCB recomputes a
 // term at unassignment, TS at the payment, and the leaf of a paid variable
@@ -669,6 +711,7 @@ void tissat_schedule_keys (void) {
   SCHEDULE_FUNCTION (test_keys_draws);
   SCHEDULE_FUNCTION (test_keys_thompson);
   SCHEDULE_FUNCTION (test_keys_ucb_vsids);
+  SCHEDULE_FUNCTION (test_keys_ucb_compact);
   SCHEDULE_FUNCTION (test_keys_chb_ucb);
   SCHEDULE_FUNCTION (test_keys_chb_thompson);
   SCHEDULE_FUNCTION (test_keys_draw_points);

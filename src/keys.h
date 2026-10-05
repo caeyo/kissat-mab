@@ -74,9 +74,12 @@
 //   increment changes (a bump round, a rescale), before every stable-mode
 //   backtrack and when stable mode is left, the literals assigned since the
 //   last record ('counted', a trail position) are recorded with the current
-//   increment, which is the one they were assigned at.  Leaving stable mode
-//   closes every open interval, and entering it opens one for every
-//   assigned variable.  Counts and 'opened' are rescaled with the scores.
+//   increment, which is the one they were assigned at.  Shrinking the trail
+//   moves 'counted' down with it; compaction, which renames the trail's
+//   literals in place and moves 'opened' with its variables, leaves it.
+//   Leaving stable mode closes every open interval, and entering it opens
+//   one for every assigned variable.  Counts and 'opened' are rescaled with
+//   the scores.
 //
 //   CHB scores: an observation is a payment, and 'inc' an increment of the
 //   counts' own, which grows by 1/d at every stable-mode conflict, after
@@ -124,6 +127,10 @@ struct keys {
   double *opened;    // UCB on VSIDS scores: increment at assignment
   uint64_t draws;    // draw points
   uint64_t ticks;    // clock ticks spent at draw points (metrics)
+#ifdef SHADOW
+  double *recount;     // shadow mode: the counts recounted (see 'policy.h')
+  uint64_t *recounted; // the bump round or conflict 'recount' is decayed to
+#endif
 };
 
 struct kissat;
@@ -170,6 +177,12 @@ static inline void kissat_move_keys (keys *keys, unsigned from,
     keys->count[to] = keys->count[from];
   if (keys->intervals)
     keys->opened[to] = keys->opened[from];
+#ifdef SHADOW
+  if (keys->counts) {
+    keys->recount[to] = keys->recount[from];
+    keys->recounted[to] = keys->recounted[from];
+  }
+#endif
 }
 
 static inline void kissat_clear_keys (keys *keys, unsigned idx) {
@@ -182,6 +195,12 @@ static inline void kissat_clear_keys (keys *keys, unsigned idx) {
     keys->count[idx] = 0;
   if (keys->intervals)
     keys->opened[idx] = 0;
+#ifdef SHADOW
+  if (keys->counts) {
+    keys->recount[idx] = 0;
+    keys->recounted[idx] = 0;
+  }
+#endif
 }
 
 #endif

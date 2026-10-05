@@ -136,6 +136,20 @@
 // and UCB its key from the score and the policy's term; under CHB the key
 // of an assigned variable's leaf may lag, and its weight is checked
 // against its key.  A failed check is a fatal error.
+//
+// Under UCB, and TS on CHB scores, which keep observation counts (see
+// 'keys.h'), shadow builds also recount them from the solver's assignment
+// history, without the counts' increments: on VSIDS scores, at the start
+// of every bump round every active variable on the trail is assigned
+// during the round, which observes it; on CHB scores every payment
+// observes its variable.  Each variable's recount is kept decayed to its
+// last observation, in bump rounds or CHB's stable-mode conflicts, and
+// decays by powers of d ('kissat_shadow_power').  Every 1000 picks, with
+// the complete check, every active variable's count N, on VSIDS scores
+// with the interval of an assigned variable added as leaving stable mode
+// would add it (without changing anything), must equal its recount to a
+// relative error of 'SHADOW_RECOUNT_TOLERANCE' of 1 + N, the quantity its
+// term depends on.
 
 #if defined(HEAPARGMAX) && defined(SHADOW)
 #error "'HEAPARGMAX' and 'SHADOW' exclude each other"
@@ -257,6 +271,8 @@ struct policy {
     uint64_t differ;   // of which the heap's variable was another one
     uint64_t checks;   // complete checks of the tree
     uint64_t rebuilds; // tree rebuilds
+    uint64_t recounts; // counts compared with their recount
+    double error;      // largest relative difference of those
   } shadow;
 #endif
 };
@@ -325,6 +341,7 @@ void kissat_sample_decision (struct kissat *, unsigned idx, bool random);
 #endif
 void kissat_print_policy_statistics (struct kissat *);
 #ifdef SHADOW
+void kissat_shadow_round (struct kissat *);
 void kissat_print_shadow_statistics (struct kissat *);
 #endif
 #else

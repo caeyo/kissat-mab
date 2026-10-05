@@ -218,8 +218,13 @@ static void compact_scores (kissat *solver, heap *old_scores,
 // heap.  Indices only decrease and the loop goes up, so nothing is
 // overwritten before it is moved.  Leaves of the variables that disappear
 // are absent (they are inactive), and leaves beyond the new number of
-// variables are made absent.  The trail is compacted too, so UCB records
-// it again from its start (see 'keys.h').
+// variables are made absent.  Compaction may happen during the search with
+// variables assigned.  The trail keeps its positions, with its literals
+// renamed ('compact_trail'), and UCB's increments at assignment move with
+// their variables, so UCB's record of the trail stays where it is (see
+// 'keys.h'): recording the trail again from its start would give every
+// variable assigned now the current increment, and so lose the bump rounds
+// it spent assigned before.
 
 static void compact_policy (kissat *solver, unsigned vars) {
   LOG ("compacting scores and policy tree");
@@ -252,7 +257,6 @@ static void compact_policy (kissat *solver, unsigned vars) {
       kissat_indicator_put (uniform, idx, false);
     kissat_clear_keys (keys, idx);
   }
-  keys->counted = 0;
   kissat_rebuild_tree (tree);
   if (mixing)
     kissat_rebuild_indicator (uniform);

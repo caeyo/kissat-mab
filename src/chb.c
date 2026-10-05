@@ -50,6 +50,10 @@ void kissat_chb_assign (kissat *solver, bool conflict) {
     kissat_update_assigned_score (solver, idx, new_q);
     if (counts)
       kissat_keys_paid (solver, idx);
+#ifdef SHADOW
+    if (counts)
+      kissat_shadow_paid (solver, idx, conflicts); // recounts observations
+#endif
     plays++;
   }
   estimator->chb.plays += plays;

@@ -200,6 +200,25 @@ static double *resize_array (kissat *solver, double *array, bool needed,
   return res;
 }
 
+#ifdef SHADOW
+
+// The same for the clocks of shadow mode's recount (see 'policy.h').
+
+static uint64_t *resize_clocks (kissat *solver, uint64_t *array,
+                                bool needed, unsigned old_size,
+                                unsigned new_size) {
+  if (!needed)
+    return 0;
+  uint64_t *res = kissat_calloc (solver, new_size, sizeof *res);
+  const unsigned kept = old_size < new_size ? old_size : new_size;
+  if (kept)
+    memcpy (res, array, kept * sizeof *res);
+  kissat_dealloc (solver, array, old_size, sizeof *array);
+  return res;
+}
+
+#endif
+
 void kissat_resize_keys (kissat *solver, unsigned size) {
   keys *const keys = &solver->policy.keys;
   if (!keys->kind)
@@ -215,6 +234,12 @@ void kissat_resize_keys (kissat *solver, unsigned size) {
       resize_array (solver, keys->count, keys->counts, old_size, size);
   keys->opened =
       resize_array (solver, keys->opened, keys->intervals, old_size, size);
+#ifdef SHADOW
+  keys->recount =
+      resize_array (solver, keys->recount, keys->counts, old_size, size);
+  keys->recounted =
+      resize_clocks (solver, keys->recounted, keys->counts, old_size, size);
+#endif
   keys->size = size;
 }
 
@@ -230,6 +255,15 @@ void kissat_release_keys (kissat *solver) {
   if (keys->opened)
     kissat_dealloc (solver, keys->opened, size, sizeof *keys->opened);
   keys->term = keys->normal = keys->count = keys->opened = 0;
+#ifdef SHADOW
+  if (keys->recount)
+    kissat_dealloc (solver, keys->recount, size, sizeof *keys->recount);
+  if (keys->recounted)
+    kissat_dealloc (solver, keys->recounted, size,
+                    sizeof *keys->recounted);
+  keys->recount = 0;
+  keys->recounted = 0;
+#endif
   keys->size = 0;
 }
 

@@ -416,6 +416,37 @@ static inline void kissat_keys_chb_conflict (kissat *solver) {
     kissat_rescale_chb_counts (solver);
 }
 
+#ifdef SHADOW
+
+// Shadow mode's recount of the observation counts (see 'policy.h'): the
+// decay d from the option 'decay', and its power for 'age' bump rounds or
+// conflicts, taken directly rather than from the counts' increments.
+
+static inline double kissat_shadow_decay (kissat *solver) {
+  return 1 - GET_OPTION (decay) * 1e-3;
+}
+
+static inline double kissat_shadow_power (double decay, uint64_t age) {
+  return age == 1 ? decay : age ? pow (decay, (double) age) : 1;
+}
+
+// A payment of 'idx' by CHB before stable-mode conflict 'conflicts' + 1 is
+// an observation, of weight one until that conflict (see 'keys.h').
+
+static inline void kissat_shadow_paid (kissat *solver, unsigned idx,
+                                       uint64_t conflicts) {
+  keys *const keys = &solver->policy.keys;
+  assert (keys->recounted[idx] <= conflicts);
+  const uint64_t age = conflicts - keys->recounted[idx];
+  double *const recount = keys->recount + idx;
+  if (*recount)
+    *recount *= kissat_shadow_power (kissat_shadow_decay (solver), age);
+  *recount += 1;
+  keys->recounted[idx] = conflicts;
+}
+
+#endif
+
 // Backtracking in stable mode unassigned 'idx'.  The tree and, with
 // mixing, the indicator tree get it back if a draw of theirs removed it.
 // Under CHB a leaf the tree kept is refreshed if it lags the score, which
