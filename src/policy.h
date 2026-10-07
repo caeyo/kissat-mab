@@ -141,8 +141,9 @@
 // 'keys.h'), shadow builds also recount them from the solver's assignment
 // history, without the counts' increments: on VSIDS scores, at the start
 // of every bump round every active variable on the trail is assigned
-// during the round, which observes it; on CHB scores every payment
-// observes its variable.  Each variable's recount is kept decayed to its
+// during the round, which observes it, or with 'ucbinterval=1' every
+// variable assigned when the round's analysis step started (see 'keys.h');
+// on CHB scores every payment observes its variable.  Each variable's recount is kept decayed to its
 // last observation, in bump rounds or CHB's stable-mode conflicts, and
 // decays by powers of d ('kissat_shadow_power').  Every 1000 picks, with
 // the complete check, every active variable's count N, on VSIDS scores

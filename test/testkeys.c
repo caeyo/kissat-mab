@@ -120,6 +120,9 @@ static void test_keys_options (void) {
   assert (!start_fails ("ucb", 1, "chb", 1));
   assert (!start_fails ("perturbed", 1, "redraw", 1));
   assert (!start_fails ("softmax", 1, "gammappm", 100));
+  assert (start_fails ("ucbinterval", 1, "thompson", 1));
+  assert (start_fails ("ucbinterval", 1, "softmax", 1));
+  assert (!start_fails ("ucbinterval", 1, "ucb", 1));
 }
 
 // Each policy keeps an unweighted tree, the arrays it needs, and its keys:
@@ -481,6 +484,95 @@ static void test_keys_ucb_compact (void) {
   kissat_release (solver);
 }
 
+// UCB counting LRB's interval ('ucbinterval=1'): a bump round inside an
+// analysis step observes the variables assigned when the step started, so
+// the intervals that the step's backtrack ends count its round, closed
+// after it, and the literal assigned after the backtrack starts its
+// interval after the round.  A step without a bump round closes its
+// intervals without one.  Rounds outside a step, which only the tests
+// make, observe the trail.  With 'ucbinterval=0' the same steps give stage
+// 2's count: the backtrack closes at once, and the literal assigned after
+// it counts the round.
+
+static void check_ucb_interval (bool interval) {
+  enum { vars = 8 };
+  kissat *solver = kissat_init ();
+  kissat_set_option (solver, "ucb", 1);
+  kissat_set_option (solver, "ucbc", 1000);
+  kissat_set_option (solver, "ucbinterval", interval);
+  start_solver (solver, vars);
+  const keys *const keys = &solver->policy.keys;
+  assert (keys->interval == interval);
+  double expected[vars] = {0};
+  bool observed[vars] = {0};
+  kissat_internal_assume (solver, LIT (1)), observed[1] = true;
+  kissat_internal_assume (solver, LIT (2)), observed[2] = true;
+  kissat_internal_assume (solver, LIT (3)), observed[3] = true;
+  bump_round (solver, expected, observed, vars);
+  // A step: its backtrack unassigns 2 and 3, a literal is assigned after
+  // it, and the bump round follows.
+  kissat_policy_begin_analysis (solver);
+  kissat_backtrack_without_updating_phases (solver, 1);
+  assert (keys->deferring == interval);
+  assert (SIZE_STACK (keys->deferred) == (interval ? 2 : 0));
+  kissat_internal_assume (solver, LIT (4));
+  observed[2] = observed[3] = interval;
+  observed[4] = !interval;
+  bump_round (solver, expected, observed, vars);
+  assert (!keys->deferring);
+  kissat_policy_end_analysis (solver);
+  bool closed[vars] = {0};
+  closed[2] = closed[3] = true;
+  check_counts (solver, expected, closed, vars);
+  if (interval) // the terms follow the counts closed after the round
+    for (unsigned idx = 2; idx <= 3; idx++) {
+      const double n = keys->count[idx] / solver->scinc;
+      assert (close (keys->term[idx], exp (keys->scale / sqrt (1 + n))));
+    }
+  observed[2] = observed[3] = false, observed[4] = true;
+  // A step without a bump round: the backtrack's intervals close at its
+  // end, without a round.
+  kissat_policy_begin_analysis (solver);
+  kissat_backtrack_without_updating_phases (solver, 0);
+  kissat_internal_assume (solver, LIT (5));
+  kissat_policy_end_analysis (solver);
+  assert (!keys->deferring), assert (EMPTY_STACK (keys->deferred));
+  closed[1] = closed[4] = true;
+  check_counts (solver, expected, closed, vars);
+  // The literal assigned in that step counts the next round, outside steps.
+  observed[1] = observed[4] = false, observed[5] = true;
+  bump_round (solver, expected, observed, vars);
+  kissat_backtrack_without_updating_phases (solver, 0);
+  closed[5] = true;
+  check_counts (solver, expected, closed, vars);
+  assert (expected[2] > 0), assert ((expected[4] > 0) == !interval);
+  kissat_release (solver);
+}
+
+static void test_keys_ucb_interval (void) {
+  check_ucb_interval (true);
+  check_ucb_interval (false);
+  // 'ucbinterval' needs UCB on VSIDS scores.
+  kissat *solver = kissat_init ();
+  kissat_set_option (solver, "chb", 1);
+  kissat_set_option (solver, "ucb", 1);
+  kissat_set_option (solver, "ucbinterval", 1);
+  for (int i = 1; i <= 4; i++)
+    kissat_add (solver, i);
+  kissat_add (solver, 0);
+  solver->stable = true;
+  kissat_update_scores (solver);
+  bool failed = false;
+  kissat_call_function_instead_of_abort (abort_call_back);
+  if (setjmp (jump_buffer))
+    failed = true;
+  else
+    kissat_start_policy (solver);
+  kissat_call_function_instead_of_abort (0);
+  assert (failed);
+  kissat_release (solver);
+}
+
 // UCB and TS on CHB scores: a payment adds the counts' increment, which
 // grows by 1/d after the payments of every conflict.  UCB recomputes a
 // term at unassignment, TS at the payment, and the leaf of a paid variable
@@ -712,6 +804,7 @@ void tissat_schedule_keys (void) {
   SCHEDULE_FUNCTION (test_keys_thompson);
   SCHEDULE_FUNCTION (test_keys_ucb_vsids);
   SCHEDULE_FUNCTION (test_keys_ucb_compact);
+  SCHEDULE_FUNCTION (test_keys_ucb_interval);
   SCHEDULE_FUNCTION (test_keys_chb_ucb);
   SCHEDULE_FUNCTION (test_keys_chb_thompson);
   SCHEDULE_FUNCTION (test_keys_draw_points);

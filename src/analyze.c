@@ -12,6 +12,10 @@
 #include "sort.h"
 #include "tiers.h"
 
+#ifndef HEAPARGMAX
+#include "inlinepolicy.h"
+#endif
+
 #include <inttypes.h>
 
 static bool one_literal_on_conflict_level (kissat *solver, clause *conflict,
@@ -547,6 +551,12 @@ int kissat_analyze (kissat *solver, clause *conflict) {
   }
   int res;
   do {
+#ifndef HEAPARGMAX
+    // A step of the analysis, for UCB's count of LRB's interval: the
+    // variables assigned now are those its bump round observes, if it has
+    // one (see 'keys.h').
+    kissat_policy_begin_analysis (solver);
+#endif
     LOGCLS (conflict, "analyzing conflict %" PRIu64, CONFLICTS);
     unsigned conflict_level;
     if (one_literal_on_conflict_level (solver, conflict, &conflict_level))
@@ -580,6 +590,9 @@ int kissat_analyze (kissat *solver, clause *conflict) {
         kissat_bump_analyzed (solver);
       kissat_reset_only_analyzed_literals (solver);
     }
+#ifndef HEAPARGMAX
+    kissat_policy_end_analysis (solver);
+#endif
   } while (!res);
   STOP (analyze);
   return res > 0 ? 0 : 20;

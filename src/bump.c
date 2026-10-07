@@ -60,11 +60,16 @@ void kissat_rescale_scores (kissat *solver) {
 
 // UCB on VSIDS scores records the increment at assignment of the literals
 // assigned since its last record before the increment changes (see
-// 'keys.h').
+// 'keys.h').  Counting LRB's interval, the intervals a backtrack of this
+// analysis step ended close after the change, so that they count this
+// round, and only then are the literals assigned since the backtrack
+// recorded, so that their intervals start after it.
 
 void kissat_bump_score_increment (kissat *solver) {
 #ifndef HEAPARGMAX
-  kissat_record_keys (solver);
+  const bool deferring = solver->policy.keys.deferring;
+  if (!deferring)
+    kissat_record_keys (solver);
 #endif
   const double old_scinc = solver->scinc;
   const double decay = GET_OPTION (decay) * 1e-3;
@@ -73,6 +78,12 @@ void kissat_bump_score_increment (kissat *solver) {
   const double new_scinc = old_scinc * factor;
   LOG ("new score increment %g = %g * %g", new_scinc, factor, old_scinc);
   solver->scinc = new_scinc;
+#ifndef HEAPARGMAX
+  if (deferring) {
+    kissat_finish_deferred_keys (solver);
+    kissat_record_keys (solver);
+  }
+#endif
   if (new_scinc > MAX_SCORE)
     kissat_rescale_scores (solver);
 }

@@ -330,11 +330,14 @@ static inline void kissat_scale_scores (kissat *solver, double factor) {
 // UCB on VSIDS scores: the literals assigned since the last record get the
 // current score increment, the one they were assigned at, since it has
 // not changed since (see 'keys.h').  Called before the increment changes,
-// before every stable-mode backtrack and when stable mode is left.
+// before every stable-mode backtrack and when stable mode is left.  While
+// closes are deferred to the bump round of an analysis step (LRB's
+// interval), the literals assigned since the step's backtrack wait for
+// that round, which records them after it.
 
 static inline void kissat_record_keys (kissat *solver) {
   keys *const keys = &solver->policy.keys;
-  if (!keys->intervals)
+  if (!keys->intervals || keys->deferring)
     return;
   const unsigned size = SIZE_ARRAY (solver->trail);
   unsigned counted = keys->counted;
@@ -363,24 +366,31 @@ static inline void kissat_policy_shrink_trail (kissat *solver,
 
 // P1, TS and UCB: backtracking in stable mode unassigned 'idx'.  On VSIDS
 // scores UCB adds the increments of the bump rounds since its assignment
-// to its count, and on either line recomputes its term.  The leaf is set
-// if a pick removed it, or if its key changed: by UCB's term, or on CHB
-// scores by payments while the variable was assigned.
+// to its count, and on either line recomputes its term.  Counting LRB's
+// interval, a backtrack inside an analysis step defers both to the step's
+// bump round, or its end (see 'keys.h').  The leaf is set if a pick
+// removed it, or if its key changed: by UCB's term, or on CHB scores by
+// payments while the variable was assigned.
 
 static inline void kissat_keys_unassign (kissat *solver, unsigned idx) {
   policy *const policy = &solver->policy;
   keys *const keys = &policy->keys;
   if (keys->kind == KEYS_UCB) {
-    double inc;
-    if (policy->chb)
-      inc = keys->increment;
-    else {
-      inc = solver->scinc;
+    if (policy->chb) {
+      const double inc = keys->increment;
+      keys->term[idx] = kissat_ucb_term (policy, keys->count[idx] / inc);
+    } else if (keys->analyzing) {
+      assert (keys->interval);
+      assert (solver->assigned[idx].trail < keys->counted);
+      PUSH_STACK (keys->deferred, idx);
+      keys->deferring = true;
+    } else {
       assert (keys->intervals);
       assert (solver->assigned[idx].trail < keys->counted);
+      const double inc = solver->scinc;
       keys->count[idx] += (inc - keys->opened[idx]) / (keys->growth - 1);
+      keys->term[idx] = kissat_ucb_term (policy, keys->count[idx] / inc);
     }
-    keys->term[idx] = kissat_ucb_term (policy, keys->count[idx] / inc);
   }
   tree *const tree = &policy->tree;
   assert (!tree->weighted);
@@ -542,6 +552,45 @@ static inline void kissat_bump_score (kissat *solver, unsigned idx,
     }
   }
   kissat_update_score (solver, idx, score);
+}
+
+// A step of conflict analysis starts: one round of 'kissat_analyze', before
+// any backtrack of its own.  Counting LRB's interval, UCB defers the closes
+// of the intervals the step's backtracks end to its bump round (see
+// 'keys.h'), and shadow mode's recount observes in that round the
+// variables assigned now.
+
+static inline void kissat_policy_begin_analysis (kissat *solver) {
+  keys *const keys = &solver->policy.keys;
+  if (!keys->interval || !solver->stable)
+    return;
+  assert (!keys->analyzing);
+  assert (!keys->deferring);
+  assert (EMPTY_STACK (keys->deferred));
+  keys->analyzing = true;
+#ifdef SHADOW
+  unsigneds *const observed = &keys->observed;
+  CLEAR_STACK (*observed);
+  const flags *const flags = solver->flags;
+  for (all_stack (unsigned, lit, solver->trail))
+    if (flags[IDX (lit)].active)
+      PUSH_STACK (*observed, IDX (lit));
+#endif
+}
+
+// The step ends, after its bump round if it had one.  Intervals still
+// deferred (no bump round) close without a round.
+
+static inline void kissat_policy_end_analysis (kissat *solver) {
+  keys *const keys = &solver->policy.keys;
+  if (!keys->analyzing)
+    return;
+  if (keys->deferring)
+    kissat_finish_deferred_keys (solver);
+  keys->analyzing = false;
+#ifdef SHADOW
+  CLEAR_STACK (keys->observed);
+#endif
 }
 
 #define POLICY_DEFER_SUMS 32

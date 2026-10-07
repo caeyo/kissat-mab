@@ -217,6 +217,21 @@ static unsigned uniform_pick (kissat *solver) {
 // (see 'policy.h'): on VSIDS scores, bump round 'rounds' has just started,
 // and every active variable on the trail is assigned during it, an
 // observation, which weighs d after the round, as the counts weigh it.
+// Counting LRB's interval ('ucbinterval=1'), the round observes instead the
+// variables that were assigned (and active) when its analysis step started,
+// before the step's backtracks ('kissat_policy_begin_analysis').
+
+static void shadow_observe (kissat *solver, unsigned idx, uint64_t round,
+                            double decay) {
+  keys *const keys = &solver->policy.keys;
+  double *const recount = keys->recount + idx;
+  uint64_t *const recounted = keys->recounted + idx;
+  assert (*recounted < round);
+  if (*recount)
+    *recount *= kissat_shadow_power (decay, round - *recounted);
+  *recount += decay;
+  *recounted = round;
+}
 
 void kissat_shadow_round (kissat *solver) {
   const policy *const policy = &solver->policy;
@@ -227,20 +242,19 @@ void kissat_shadow_round (kissat *solver) {
   assert (keys->recount), assert (keys->recounted);
   const uint64_t round = solver->estimator.rounds;
   const double decay = kissat_shadow_decay (solver);
+  if (keys->analyzing) {
+    assert (keys->interval);
+    for (all_stack (unsigned, idx, keys->observed))
+      shadow_observe (solver, idx, round, decay);
+    return;
+  }
   const flags *const flags = solver->flags;
-  double *const recount = keys->recount;
-  uint64_t *const recounted = keys->recounted;
   const unsigned *const begin = BEGIN_ARRAY (solver->trail);
   const unsigned *const end = END_ARRAY (solver->trail);
   for (const unsigned *p = begin; p != end; p++) {
     const unsigned idx = IDX (*p);
-    if (!flags[idx].active)
-      continue;
-    assert (recounted[idx] < round);
-    if (recount[idx])
-      recount[idx] *= kissat_shadow_power (decay, round - recounted[idx]);
-    recount[idx] += decay;
-    recounted[idx] = round;
+    if (flags[idx].active)
+      shadow_observe (solver, idx, round, decay);
   }
 }
 

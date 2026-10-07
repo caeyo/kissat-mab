@@ -171,6 +171,7 @@
   OPTION (tumble, 1, 0, 1, "tumbled external indices order") \
   TREEOPT (ucb, 0, 0, 1, "upper confidence bounds (UCB)") \
   TREEOPT (ucbc, 0, 0, 1e6, "UCB c in per mille") \
+  TREEOPT (ucbinterval, 0, 0, 1, "UCB counts LRB's interval (VSIDS)") \
   NQTOPT (verbose, 0, 0, 3, "verbosity level") \
   OPTION (vivify, 1, 0, 1, "vivify clauses") \
   OPTION (vivifyeffort, 100, 0, 1e3, "effort in per mille") \
