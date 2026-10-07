@@ -185,7 +185,7 @@ run them.  For builds that must carry no instrumentation:
 
    --no-decision-metrics  compile the decision metrics out
 
-Phase 3's measurements of the decision's feedback, M1 and M2, for its
+Phase 3's measurements of the decision's feedback, M1, M2 and M3, for its
 measurement runs only (see 'src/feedback.h'); other builds have none:
 
    --feedback       measure the feedback (tree builds, off by default)

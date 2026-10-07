@@ -17,6 +17,9 @@ struct frame {
 #ifndef NDEBUG
   unsigned saved;
 #endif
+#ifdef FEEDBACK
+  unsigned assigned; // variables assigned at this level (see 'feedback.h')
+#endif
 };
 
 // clang-format off

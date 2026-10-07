@@ -3,7 +3,7 @@
 
 // Feedback builds ('./configure --feedback', '-DFEEDBACK', tree builds
 // only) measure the feedback of the stable-mode decision: Phase 3's
-// measurements M1 and M2 (research plan, Phase 3, Specification).  Nothing
+// measurements M1, M2 and M3 (research plan, Phase 3, Specification).  Nothing
 // in the solver reads them and they draw nothing, so a feedback build
 // decides, draws and runs the trajectory of the default build at the same
 // commit, whatever the options.  Other builds compile none of this.  The
@@ -86,6 +86,40 @@
 // outcomes plus open picks.  A pick not followed by its decision, which
 // only the unit tests make, is taken back.
 //
+// M3 on both lines: the yield of a pick.  M2's picks, each pending until
+// its interval closes (on the CHB line too, where M2's outcome comes
+// earlier, at the payment), with three more quantities.  'y_prop': the
+// variables assigned at the pick's level when the search propagation that
+// follows its decision ends, the decision included, so at least one, and
+// with a conflict those assigned before it; read from the level's trail
+// segment, which then holds that level only.  'y_obs': the sum, over the
+// conflicts of the pick's interval, of the variables assigned at its level
+// at the conflict, before the backjump.  A conflict here is an analysis
+// step whose analyzed variables are bumped (VSIDS: its bump round, M1's
+// round) or recorded as CHB's participants (CHB): the same steps on both
+// lines.  The variables of each open pick's level are taken when the step
+// starts, before its backtracks, and added when its analyzed variables are
+// bumped or recorded; a pick whose interval a backtrack of the step ends
+// closes after that (VSIDS: with its deferred interval; CHB: at the step's
+// end), so that the conflict ending it counts.  The variables assigned at
+// a level are counted in its frame ('frames.h') at every assignment, since
+// chronological backtracking leaves variables of lower levels in a higher
+// level's trail segment: a level keeps its count below any backtrack's new
+// level, and a level pushed anew starts from zero.  'Y_v': the variable's
+// exponential recency-weighted average of 'y_prop' over its earlier picks,
+// Y <- (1 - alpha) Y + alpha y_prop with alpha 'FEEDBACK_YIELD_ALPHA',
+// starting at the first 'y_prop' (so Y >= 1) and undefined before, frozen
+// at the pick in its bin, and updated when the pick's interval closes.
+// Sums per kind of pick: by M2's age and count bins (outcomes, sums of
+// 'y_prop' and 'y_obs'), by the bin of 'Y_v' (the same with M2's outcome:
+// on the VSIDS line k, b and picks bumped, on the CHB line the payment),
+// and for uniform picks by 'Y_v' crossed with stale (age never, old or
+// stale) against recent.  Also the sums, over every step's addition, of
+// the levels' variables and of their trail segments, which differ where
+// chronological backtracking left variables in other levels' segments.  A
+// pick whose propagation's end is not seen before its interval closes,
+// which only the unit tests make, is taken back.
+//
 // Checks in assertion builds ('-c', which '--shadow' implies).  When a step
 // of conflict analysis starts, before its backtracks, the active variables
 // on the trail are listed; after the step's bump loop each of them has the
@@ -97,8 +131,15 @@
 // stable mode would add it, to 1e-12 of 1 + N, and both records of the
 // increment at assignment must agree bitwise; on CHB scores under UCB or TS
 // the count must equal UCB's bitwise, and in shadow builds 'paid[DEC] +
-// paid[IMP]' the payments that shadow mode counts.  At the end picks must
-// be outcomes plus open picks.  A failed check is a fatal error.
+// paid[IMP]' the payments that shadow mode counts.  M3 by brute force:
+// when a step starts every level's variables are counted from the trail
+// and must equal its frame's count, and those of the open picks' levels
+// go to a shadow sum of 'y_obs' when the step's variables are bumped or
+// recorded; at the end of a pick's propagation its level's variables are
+// counted from the trail; both shadow sums must equal 'y_prop' and 'y_obs'
+// when the pick's interval closes.  At the end picks must be outcomes plus
+// open picks, for M2 and for M3, and M3's outcomes by age, by count and by
+// the bin of 'Y_v' must agree.  A failed check is a fatal error.
 
 #ifdef FEEDBACK
 
@@ -154,10 +195,28 @@
 #define FEEDBACK_COUNT_ABOVE5 3 // N >= 5
 #define FEEDBACK_COUNTS 4
 
+// M3: the step size of 'Y_v', its bins, and the uniform picks' ages
+// crossed with them.
+
+#define FEEDBACK_YIELD_ALPHA 0.1
+
+#define FEEDBACK_YIELD_NONE 0    // undefined
+#define FEEDBACK_YIELD_BELOW2 1  // 1 <= Y < 2
+#define FEEDBACK_YIELD_BELOW4 2  // 2 <= Y < 4
+#define FEEDBACK_YIELD_BELOW16 3 // 4 <= Y < 16
+#define FEEDBACK_YIELD_BELOW64 4 // 16 <= Y < 64
+#define FEEDBACK_YIELD_ABOVE64 5 // Y >= 64
+#define FEEDBACK_YIELDS 6
+
+#define FEEDBACK_STALE 0  // age never, old or stale
+#define FEEDBACK_RECENT 1 // age recent
+
 // A variable's state: its pending pick with kind, age bin and count bin,
 // and on the VSIDS line whether its interval is open (recorded), and
 // whether a backtrack inside an analysis step ended it, deferring its close
-// to the step's bump round, with its class.
+// to the step's bump round, with its class.  M3's pick is pending with
+// the bin of 'Y_v' until its interval closes, which on the CHB line a
+// backtrack inside a step defers to the step's end ('CLOSING').
 
 #define FEEDBACK_PENDING 1u
 #define FEEDBACK_KIND_SHIFT 1
@@ -166,8 +225,12 @@
 #define FEEDBACK_OPEN 64u
 #define FEEDBACK_DEFERRED 128u
 #define FEEDBACK_DEFERRED_IMP 256u
+#define FEEDBACK_YIELD 512u
+#define FEEDBACK_YIELD_SHIFT 10
+#define FEEDBACK_CLOSING 8192u
 
 typedef struct feedback_sums feedback_sums;
+typedef struct feedback_yields feedback_yields;
 typedef struct feedback feedback;
 
 // Sums over a set of events or outcomes: on the VSIDS line intervals ('k'
@@ -181,6 +244,16 @@ struct feedback_sums {
   double r;
   double round[FEEDBACK_PREDICTORS];
   double interval[FEEDBACK_PREDICTORS];
+};
+
+// M3's sums over a set of picks whose intervals closed: their number, M2's
+// outcome ('k', 'b' and 'bumped' on the VSIDS line, the payment 'r' on the
+// CHB line), and the sums of 'y_prop' and 'y_obs'.
+
+struct feedback_yields {
+  uint64_t n, k, b, bumped;
+  double r;
+  uint64_t prop, obs;
 };
 
 struct feedback {
@@ -209,6 +282,15 @@ struct feedback {
 #ifdef SHADOW
   uint64_t *repaid; // CHB: payments counted by shadow mode
 #endif
+  double *yield;        // M3: Y_v (zero: undefined)
+  unsigned *propagated; // M3: y_prop of the pending pick (zero: not yet)
+  uint64_t *observed;   // M3: y_obs of the pending pick
+  double *reward;       // M3, CHB: the payment of the pending pick
+  unsigned yielding;    // M3: the pick awaiting its propagation's end + 1
+  unsigneds staged;     // M3: the step's open picks and their levels'
+                        // variables, pairwise, added at its conflict
+  uint64_t staged_levels;   // M3: their sum
+  uint64_t staged_segments; // M3: the sum of their trail segments
   struct {
     uint64_t intervals[2]; // VSIDS: closed intervals by class
     uint64_t bumps[2][2];  // VSIDS: bumps [in an ended interval][class]
@@ -227,6 +309,15 @@ struct feedback {
     feedback_sums age[FEEDBACK_KINDS][FEEDBACK_AGES];
     feedback_sums count[FEEDBACK_KINDS][FEEDBACK_COUNTS];
   } m2;
+  struct {
+    uint64_t picks[FEEDBACK_KINDS];
+    feedback_yields age[FEEDBACK_KINDS][FEEDBACK_AGES];
+    feedback_yields count[FEEDBACK_KINDS][FEEDBACK_COUNTS];
+    feedback_yields yield[FEEDBACK_KINDS][FEEDBACK_YIELDS];
+    feedback_yields crossed[2][FEEDBACK_YIELDS]; // uniform: stale, recent
+    uint64_t levels;   // every step's additions: the levels' variables
+    uint64_t segments; // and their trail segments
+  } m3;
 #ifndef NDEBUG
   struct {
     unsigneds listed;   // VSIDS: active variables assigned at the step
@@ -240,6 +331,12 @@ struct feedback {
     uint64_t chb;       // CHB counts compared with UCB's
     uint64_t payments;  // payment counts compared with shadow mode's
     uint64_t intervals; // intervals compared with the counted rounds
+    unsigned *propagated; // M3: y_prop counted from the trail
+    uint64_t *observed;   // M3: y_obs counted from the trail
+    unsigneds staged;     // M3: the step's open picks, counted likewise
+    unsigneds levels;     // M3: variables per level, from the trail
+    uint64_t steps;       // M3: levels compared with their frames' counts
+    uint64_t yields;      // M3: picks compared with the shadow sums
   } check;
 #endif
 };
@@ -270,8 +367,9 @@ void kissat_feedback_round (struct kissat *);
 void kissat_feedback_bump (struct kissat *, unsigned idx);
 void kissat_feedback_round_end (struct kissat *);
 
-// VSIDS line: a step of conflict analysis starts, before its backtracks,
-// and ends, after its bump round if it has one.
+// A step of conflict analysis starts, before its backtracks, and ends,
+// after its bump round (VSIDS) or its record of CHB's participants (CHB)
+// if it has one.
 
 void kissat_feedback_begin_analysis (struct kissat *);
 void kissat_feedback_end_analysis (struct kissat *);
@@ -299,6 +397,13 @@ void kissat_shadow_feedback_paid (struct kissat *, unsigned idx);
 // Every pick of the policy, 'uniform' if mixing's coin took it.
 
 void kissat_feedback_pick (struct kissat *, unsigned idx, bool uniform);
+
+// M3: a search propagation ends (every one, in either mode), and a step's
+// analyzed variables are bumped or recorded as CHB's participants (in
+// stable mode).
+
+void kissat_feedback_propagated (struct kissat *);
+void kissat_feedback_observe (struct kissat *);
 
 void kissat_print_feedback_statistics (struct kissat *);
 

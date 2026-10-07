@@ -153,10 +153,12 @@
 // term depends on.
 //
 // Feedback builds ('./configure --feedback', '-DFEEDBACK'): a tree build
-// that also measures the feedback of the decision, Phase 3's M1 and M2
-// (see 'feedback.h'), through hooks at the pick, the bump round, CHB's
+// that also measures the feedback of the decision, Phase 3's M1, M2 and M3
+// (see 'feedback.h'), through hooks at the pick, the end of a search
+// propagation, the bump round and CHB's record of participants, CHB's
 // payments, stable-mode unassignment, leaving and entering stable mode,
-// rescales and compaction.  Nothing in the solver reads the measurements.
+// rescales and compaction, and a count of the variables assigned at each
+// level in its frame.  Nothing in the solver reads the measurements.
 
 #if defined(HEAPARGMAX) && defined(SHADOW)
 #error "'HEAPARGMAX' and 'SHADOW' exclude each other"
@@ -253,7 +255,7 @@ struct policy {
   indicator uniform; // mixing: the available variables, drawn uniformly
   keys keys;         // P1, TS and UCB: their terms and counts
 #ifdef FEEDBACK
-  feedback feedback; // feedback builds: M1 and M2 (see 'feedback.h')
+  feedback feedback; // feedback builds: M1, M2 and M3 (see 'feedback.h')
 #endif
   generator random;  // the policy's own generator
   double gamma;      // mixing: probability of a uniform pick (0: none)

@@ -1,9 +1,11 @@
+#include "../src/analyze.h"
 #include "../src/backtrack.h"
 #include "../src/bump.h"
 #include "../src/chb.h"
 #include "../src/collect.h"
 #include "../src/decide.h"
 #include "../src/inlinepolicy.h"
+#include "../src/propsearch.h"
 
 #include "test.h"
 
@@ -39,7 +41,8 @@ static bool near (double a, double b) {
 }
 
 // An implied assignment at the current level: a reason that is not
-// 'DECISION_REASON', on the trail.
+// 'DECISION_REASON', on the trail, counted in the level's frame as
+// 'kissat_assign' counts it.
 
 static void imply (kissat *solver, unsigned idx) {
   const unsigned lit = LIT (idx);
@@ -54,6 +57,7 @@ static void imply (kissat *solver, unsigned idx) {
   a->binary = false;
   a->reason = 0;
   PUSH_ARRAY (solver->trail, lit);
+  FRAME (solver->level).assigned++;
 }
 
 static unsigned class_of (kissat *solver, unsigned idx) {
@@ -626,6 +630,277 @@ static void test_feedback_chb (void) {
   check_chb (true);
 }
 
+// M3.  An implied assignment at 'level' below the current one, placed on
+// the trail at its end, in the current level's segment, as chronological
+// backtracking leaves such variables.
+
+static void imply_at (kissat *solver, unsigned idx, unsigned level) {
+  assert (level < solver->level);
+  imply (solver, idx);
+  FRAME (solver->level).assigned--;
+  solver->assigned[idx].level = level;
+  FRAME (level).assigned++;
+}
+
+// A step's analyzed variables, recorded as CHB's participants (CHB) or
+// bumped (VSIDS) without the expectations of M1.
+
+static void record (kissat *solver, unsigned idx) {
+  PUSH_STACK (solver->analyzed, idx);
+  kissat_bump_analyzed (solver);
+  CLEAR_STACK (solver->analyzed);
+}
+
+static const feedback_yields *yields (const feedback *fb, unsigned kind,
+                                      unsigned bin) {
+  return &fb->m3.yield[kind][bin];
+}
+
+// On the VSIDS line: a pick whose propagation assigns two variables at its
+// level; three conflicts in its interval, the first with a variable of its
+// level in the next level's trail segment, the second after the level
+// gained the asserted literal, and the third ending the interval, which it
+// observes too; then picks with 'Y_v' defined, one closed when stable mode
+// is left.
+
+static void test_feedback_yield_vsids (void) {
+  kissat *solver = new_solver (TEST_VARS, 0, 0, 0, 0);
+  const feedback *const fb = &solver->policy.feedback;
+  kissat_update_score (solver, 5, 100);
+  expected e;
+  memset (&e, 0, sizeof e);
+  kissat_decide (solver);
+  assert (IDX (PEEK_ARRAY (solver->trail, 0)) == 5);
+  assert (fb->yielding == 6);
+  assert (fb->state[5] & FEEDBACK_YIELD);
+  assert (((fb->state[5] >> FEEDBACK_YIELD_SHIFT) & 7) ==
+          FEEDBACK_YIELD_NONE);
+  imply (solver, 2);
+  imply (solver, 3);
+  kissat_feedback_propagated (solver);
+  assert (!fb->yielding);
+  assert (fb->propagated[5] == 3);
+  // Level 2: an assumed decision, not a pick, an implied variable, and a
+  // variable of level 1 in level 2's segment.
+  kissat_internal_assume (solver, LIT (0));
+  imply (solver, 1);
+  imply_at (solver, 4, 1);
+  assert (FRAME (1).assigned == 4 && FRAME (2).assigned == 2);
+  // The first conflict: its backtrack to level 1 keeps 4, and level 1
+  // gains the asserted literal 6.
+  begin_step (solver, &e);
+  backtrack (solver, &e, 1);
+  assert (VALUE (LIT (4)) && LEVEL (LIT (4)) == 1);
+  imply (solver, 6);
+  bump_round (solver, &e, (unsigned[]){5}, 1);
+  end_step (solver, &e);
+  assert (fb->observed[5] == 4);
+  assert (fb->m3.levels == 4 && fb->m3.segments == 3);
+  // The second conflict, with five variables at level 1.
+  assert (FRAME (1).assigned == 5);
+  begin_step (solver, &e);
+  bump_round (solver, &e, (unsigned[]){2}, 1);
+  end_step (solver, &e);
+  assert (fb->observed[5] == 9);
+  // The third ends the interval and counts.
+  begin_step (solver, &e);
+  backtrack (solver, &e, 0);
+  assert (fb->state[5] & FEEDBACK_YIELD);
+  bump_round (solver, &e, (unsigned[]){5}, 1);
+  end_step (solver, &e);
+  assert (!(fb->state[5] & FEEDBACK_YIELD));
+  const feedback_yields *const none =
+      yields (fb, FEEDBACK_POLICY, FEEDBACK_YIELD_NONE);
+  assert (none->n == 1 && none->k == 3 && none->b == 2);
+  assert (none->bumped == 1 && none->prop == 3 && none->obs == 14);
+  const feedback_yields *const never =
+      &fb->m3.age[FEEDBACK_POLICY][FEEDBACK_AGE_NEVER];
+  assert (never->n == 1 && never->prop == 3 && never->obs == 14);
+  assert (fb->m3.count[FEEDBACK_POLICY][FEEDBACK_COUNT_ZERO].obs == 14);
+  assert (fb->m3.levels == 14 && fb->m3.segments == 13);
+  assert (fb->yield[5] == 3);
+  assert (!fb->propagated[5] && !fb->observed[5]);
+  // A pick with 'Y_v' defined, closed without a conflict: its propagation
+  // assigns nothing more.
+  kissat_decide (solver);
+  assert (IDX (PEEK_ARRAY (solver->trail, 0)) == 5);
+  assert (((fb->state[5] >> FEEDBACK_YIELD_SHIFT) & 7) ==
+          FEEDBACK_YIELD_BELOW4);
+  kissat_feedback_propagated (solver);
+  backtrack (solver, &e, 0);
+  const feedback_yields *const below4 =
+      yields (fb, FEEDBACK_POLICY, FEEDBACK_YIELD_BELOW4);
+  assert (below4->n == 1 && below4->k == 0 && below4->prop == 1);
+  assert (!below4->obs);
+  assert (near (fb->yield[5], 0.9 * 3 + 0.1 * 1));
+  // Another, still open when stable mode is left, which closes it.
+  kissat_decide (solver);
+  imply (solver, 2);
+  kissat_feedback_propagated (solver);
+  kissat_leave_stable_keys (solver);
+  kissat_leave_stable_feedback (solver);
+  close_expected (&e, 5, FEEDBACK_DEC), close_expected (&e, 2, FEEDBACK_IMP);
+  assert (below4->n == 2 && below4->prop == 3 && !below4->obs);
+  assert (near (fb->yield[5], 0.9 * (0.9 * 3 + 0.1 * 1) + 0.1 * 2));
+  assert (fb->m3.picks[FEEDBACK_POLICY] == 3);
+  assert (!fb->m3.picks[FEEDBACK_UNIFORM]);
+  check_sums (solver, &e, TEST_VARS);
+  kissat_release (solver);
+}
+
+// Uniform picks crossed with stale against recent: with gamma one and a
+// single unassigned variable, its pick when never observed, and again
+// right after its interval spanned a conflict.
+
+static void test_feedback_yield_crossed (void) {
+  kissat *solver = new_solver (3, "gammappm", 1000000, 0, 0);
+  const feedback *const fb = &solver->policy.feedback;
+  expected e;
+  memset (&e, 0, sizeof e);
+  for (unsigned round = 0; round < 2; round++) {
+    kissat_internal_assume (solver, LIT (0));
+    kissat_internal_assume (solver, LIT (1));
+    kissat_decide (solver);
+    assert (IDX (PEEK_ARRAY (solver->trail, 2)) == 2);
+    const unsigned state = fb->state[2];
+    assert ((state >> FEEDBACK_KIND_SHIFT) & 1);
+    assert (((state >> FEEDBACK_AGE_SHIFT) & 3) ==
+            (round ? FEEDBACK_AGE_RECENT : FEEDBACK_AGE_NEVER));
+    kissat_feedback_propagated (solver);
+    if (round)
+      backtrack (solver, &e, 0);
+    else {
+      begin_step (solver, &e);
+      backtrack (solver, &e, 0);
+      bump_round (solver, &e, (unsigned[]){2}, 1);
+      end_step (solver, &e);
+    }
+  }
+  const feedback_yields *const stale =
+      &fb->m3.crossed[FEEDBACK_STALE][FEEDBACK_YIELD_NONE];
+  assert (stale->n == 1 && stale->k == 1 && stale->b == 1);
+  assert (stale->prop == 1 && stale->obs == 1);
+  const feedback_yields *const recent =
+      &fb->m3.crossed[FEEDBACK_RECENT][FEEDBACK_YIELD_BELOW2];
+  assert (recent->n == 1 && recent->k == 0 && recent->prop == 1);
+  assert (!recent->obs);
+  for (unsigned bin = 0; bin < FEEDBACK_YIELDS; bin++) {
+    const feedback_yields *const all = yields (fb, FEEDBACK_UNIFORM, bin);
+    assert (all->n == fb->m3.crossed[0][bin].n + fb->m3.crossed[1][bin].n);
+    assert (!yields (fb, FEEDBACK_POLICY, bin)->n);
+  }
+  assert (fb->m3.picks[FEEDBACK_UNIFORM] == 2);
+  kissat_release (solver);
+}
+
+// On the CHB line: a pick paid at its propagation, whose interval a
+// conflict's backtrack ends, closing at the step's end with the conflict
+// counted; a pick whose interval ends at a step without participants; and
+// a pick closed when stable mode is left.  M2's outcome is the payment,
+// which M3 adds when the interval closes.
+
+static void test_feedback_yield_chb (void) {
+  kissat *solver = new_solver (6, "chb", 1, 0, 0);
+  const feedback *const fb = &solver->policy.feedback;
+  chb_expected x;
+  memset (&x, 0, sizeof x);
+  x.increment = 1;
+  expected e;
+  memset (&e, 0, sizeof e);
+  double rewards[3];
+  for (unsigned round = 0; round < 3; round++) {
+    kissat_decide (solver);
+    assert (IDX (PEEK_ARRAY (solver->trail, 0)) == 0);
+    for (unsigned i = 0; i < round; i++)
+      imply (solver, 1 + i);
+    if (!round)
+      imply (solver, 3);
+    kissat_feedback_propagated (solver);
+    const double paid = fb->m2.age[FEEDBACK_POLICY][0].r +
+                        fb->m2.age[FEEDBACK_POLICY][1].r +
+                        fb->m2.age[FEEDBACK_POLICY][2].r +
+                        fb->m2.age[FEEDBACK_POLICY][3].r;
+    pay (solver, &x, round != 1);
+    rewards[round] = fb->m2.age[FEEDBACK_POLICY][0].r +
+                     fb->m2.age[FEEDBACK_POLICY][1].r +
+                     fb->m2.age[FEEDBACK_POLICY][2].r +
+                     fb->m2.age[FEEDBACK_POLICY][3].r - paid;
+    assert (!(fb->state[0] & FEEDBACK_PENDING));
+    assert (fb->state[0] & FEEDBACK_YIELD);
+    if (round < 2) {
+      begin_step (solver, &e);
+      kissat_backtrack_without_updating_phases (solver, 0);
+      x.played = 0;
+      assert (fb->state[0] & FEEDBACK_CLOSING);
+      if (!round)
+        record (solver, 3);
+      kissat_policy_end_analysis (solver);
+      e.analyzing = false;
+    } else {
+      begin_step (solver, &e);
+      record (solver, 0);
+      kissat_policy_end_analysis (solver);
+      e.analyzing = false;
+      kissat_leave_stable_keys (solver);
+      kissat_leave_stable_feedback (solver);
+    }
+    assert (!fb->state[0]);
+  }
+  const feedback_yields *const none =
+      yields (fb, FEEDBACK_POLICY, FEEDBACK_YIELD_NONE);
+  assert (none->n == 1 && none->prop == 2 && none->obs == 2);
+  assert (near (none->r, rewards[0]));
+  const feedback_yields *const below4 =
+      yields (fb, FEEDBACK_POLICY, FEEDBACK_YIELD_BELOW4);
+  assert (below4->n == 2 && below4->prop == 2 + 3 && below4->obs == 3);
+  assert (near (below4->r, rewards[1] + rewards[2]));
+  assert (near (fb->yield[0], 0.9 * (0.9 * 2 + 0.1 * 2) + 0.1 * 3));
+  assert (fb->m3.picks[FEEDBACK_POLICY] == 3);
+  assert (fb->m2.picks[FEEDBACK_POLICY] == 3);
+  kissat_release (solver);
+}
+
+// Through the solver's own propagation and analysis: deciding 1 implies 2
+// and 3 by binary clauses and 4 by a ternary one, and (-2 -4) is falsified.
+// The conflict is on the pick's level, which the analysis backtracks, so
+// the pick closes with the conflict counted.
+
+static void test_feedback_yield_search (void) {
+  kissat *solver = kissat_init ();
+#ifndef NDEBUG
+  kissat_set_option (solver, "check", 0);
+#endif
+  const int clauses[][4] = {{-1, 2, 0}, {-1, 3, 0}, {-2, -3, 4, 0},
+                            {-2, -4, 0}, {1, 5, 6, 0}};
+  for (unsigned i = 0; i < sizeof clauses / sizeof *clauses; i++)
+    for (const int *p = clauses[i];; p++) {
+      kissat_add (solver, *p);
+      if (!*p)
+        break;
+    }
+  solver->stable = true;
+  kissat_init_averages (solver, &AVERAGES);
+  kissat_update_scores (solver);
+  kissat_start_policy (solver);
+  const feedback *const fb = &solver->policy.feedback;
+  kissat_update_score (solver, 0, 100);
+  kissat_decide (solver);
+  assert (PEEK_ARRAY (solver->trail, 0) == LIT (0));
+  clause *const conflict = kissat_search_propagate (solver);
+  assert (conflict);
+  assert (fb->propagated[0] == 4);
+  assert (FRAME (1).assigned == 4);
+  kissat_analyze (solver, conflict);
+  assert (!solver->level);
+  assert (!(fb->state[0] & FEEDBACK_YIELD));
+  const feedback_yields *const none =
+      yields (fb, FEEDBACK_POLICY, FEEDBACK_YIELD_NONE);
+  assert (none->n == 1 && none->prop == 4 && none->obs == 4);
+  assert (none->k == 1);
+  assert (fb->yield[0] == 4);
+  kissat_release (solver);
+}
+
 #endif
 
 void tissat_schedule_feedback (void) {
@@ -636,5 +911,9 @@ void tissat_schedule_feedback (void) {
   SCHEDULE_FUNCTION (test_feedback_vsids_ages);
   SCHEDULE_FUNCTION (test_feedback_compact);
   SCHEDULE_FUNCTION (test_feedback_chb);
+  SCHEDULE_FUNCTION (test_feedback_yield_vsids);
+  SCHEDULE_FUNCTION (test_feedback_yield_crossed);
+  SCHEDULE_FUNCTION (test_feedback_yield_chb);
+  SCHEDULE_FUNCTION (test_feedback_yield_search);
 #endif
 }

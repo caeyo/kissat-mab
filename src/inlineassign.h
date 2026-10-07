@@ -75,6 +75,12 @@ static inline void kissat_assign (kissat *solver, const bool probing,
 #endif
   struct assigned *a = assigned + idx;
   *a = b;
+
+#ifdef FEEDBACK
+  // Feedback builds count the variables assigned at every level, which
+  // backtracking leaves alone below its new level (see 'feedback.h').
+  FRAME (level).assigned++;
+#endif
 }
 
 static inline unsigned

@@ -12,6 +12,9 @@ static inline void kissat_push_frame (kissat *solver, unsigned decision) {
   frame.promote = false;
   frame.trail = trail;
   frame.used = 0;
+#ifdef FEEDBACK
+  frame.assigned = 0;
+#endif
   PUSH_STACK (solver->frames, frame);
 }
 

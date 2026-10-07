@@ -52,6 +52,9 @@ clause *kissat_search_propagate (kissat *solver) {
   solver->ticks = 0;
   const unsigned *saved_propagate = solver->propagate;
   clause *conflict = search_propagate (solver);
+#ifdef FEEDBACK
+  kissat_feedback_propagated (solver); // M3's y_prop of a pick
+#endif
 #ifndef HEAPARGMAX
   if (kissat_chb (solver))
     kissat_chb_assign (solver, conflict != 0); // pays CHB's rewards

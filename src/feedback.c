@@ -38,7 +38,15 @@ void kissat_resize_feedback (kissat *solver, unsigned new_size) {
   if (old_size == new_size)
     return;
   RESIZE (fb->state, 1);
+  RESIZE (fb->yield, 1);
+  RESIZE (fb->propagated, 1);
+  RESIZE (fb->observed, 1);
+#ifndef NDEBUG
+  RESIZE (fb->check.propagated, 1);
+  RESIZE (fb->check.observed, 1);
+#endif
   if (fb->chb) {
+    RESIZE (fb->reward, 1);
     for (unsigned c = 0; c < 2; c++) {
       RESIZE (fb->q[c], 1);
       RESIZE (fb->paid[c], 1);
@@ -94,13 +102,22 @@ void kissat_release_feedback (kissat *solver) {
 #ifdef SHADOW
   RELEASE (fb->repaid, 1);
 #endif
+  RELEASE (fb->yield, 1);
+  RELEASE (fb->propagated, 1);
+  RELEASE (fb->observed, 1);
+  RELEASE (fb->reward, 1);
 #ifndef NDEBUG
   RELEASE (fb->check.rounds, 1);
   RELEASE (fb->check.bumped, 1);
   RELEASE (fb->check.marked, 1);
+  RELEASE (fb->check.propagated, 1);
+  RELEASE (fb->check.observed, 1);
   RELEASE_STACK (fb->check.listed);
+  RELEASE_STACK (fb->check.staged);
+  RELEASE_STACK (fb->check.levels);
 #endif
   RELEASE_STACK (fb->deferred);
+  RELEASE_STACK (fb->staged);
   fb->size = 0;
 }
 
@@ -129,7 +146,17 @@ void kissat_move_feedback (kissat *solver, unsigned from, unsigned to) {
   if (!fb->started)
     return;
   fb->state[to] = fb->state[from];
+  fb->yield[to] = fb->yield[from];
+  fb->propagated[to] = fb->propagated[from];
+  fb->observed[to] = fb->observed[from];
+  if (fb->yielding == from + 1)
+    fb->yielding = to + 1;
+#ifndef NDEBUG
+  fb->check.propagated[to] = fb->check.propagated[from];
+  fb->check.observed[to] = fb->check.observed[from];
+#endif
   if (fb->chb) {
+    fb->reward[to] = fb->reward[from];
     for (unsigned c = 0; c < 2; c++) {
       fb->q[c][to] = fb->q[c][from];
       fb->paid[c][to] = fb->paid[c][from];
@@ -164,7 +191,17 @@ void kissat_clear_feedback (kissat *solver, unsigned idx) {
   if (!fb->started)
     return;
   fb->state[idx] = 0;
+  fb->yield[idx] = 0;
+  fb->propagated[idx] = 0;
+  fb->observed[idx] = 0;
+  if (fb->yielding == idx + 1)
+    fb->yielding = 0;
+#ifndef NDEBUG
+  fb->check.propagated[idx] = 0;
+  fb->check.observed[idx] = 0;
+#endif
   if (fb->chb) {
+    fb->reward[idx] = 0;
     for (unsigned c = 0; c < 2; c++) {
       fb->q[c][idx] = 0;
       fb->paid[c][idx] = 0;
@@ -423,14 +460,244 @@ static void add_outcome (feedback *fb, unsigned state, uint64_t k,
   }
 }
 
+// M3: the bin of 'Y_v', which is at least one once defined.
+
+static unsigned yield_bin (double yield) {
+  if (!(yield > 0))
+    return FEEDBACK_YIELD_NONE;
+  if (yield < 2)
+    return FEEDBACK_YIELD_BELOW2;
+  if (yield < 4)
+    return FEEDBACK_YIELD_BELOW4;
+  if (yield < 16)
+    return FEEDBACK_YIELD_BELOW16;
+  if (yield < 64)
+    return FEEDBACK_YIELD_BELOW64;
+  return FEEDBACK_YIELD_ABOVE64;
+}
+
+// M3: the pending pick of 'idx' is done with, its 'y_prop' and 'y_obs'
+// reset.  A pick taken back is taken back from M3's picks as well.
+
+static void reset_yield (feedback *fb, unsigned idx) {
+  fb->propagated[idx] = 0;
+  fb->observed[idx] = 0;
+  if (fb->chb)
+    fb->reward[idx] = 0;
+  if (fb->yielding == idx + 1)
+    fb->yielding = 0;
+#ifndef NDEBUG
+  fb->check.propagated[idx] = 0;
+  fb->check.observed[idx] = 0;
+#endif
+}
+
+static void void_yield (feedback *fb, unsigned idx, unsigned state) {
+  assert (state & FEEDBACK_YIELD);
+  const unsigned kind = (state >> FEEDBACK_KIND_SHIFT) & 1;
+  assert (fb->m3.picks[kind]);
+  fb->m3.picks[kind]--;
+  reset_yield (fb, idx);
+}
+
+#ifndef NDEBUG
+
+// Check (c) of M3: 'y_prop' and 'y_obs' against their shadow sums, counted
+// from the trail.
+
+static void check_yield (kissat *solver, unsigned idx, unsigned prop,
+                         uint64_t obs) {
+  feedback *const fb = &solver->policy.feedback;
+  const unsigned counted_prop = fb->check.propagated[idx];
+  const uint64_t counted_obs = fb->check.observed[idx];
+  if (counted_prop != prop || counted_obs != obs)
+    kissat_fatal ("feedback: pick of variable %u closed with y_prop %u "
+                  "and y_obs %" PRIu64 ", but %u and %" PRIu64
+                  " counted from the trail",
+                  idx, prop, obs, counted_prop, counted_obs);
+  fb->check.yields++;
+}
+
+#endif
+
+// M3: the interval of the pending pick of 'idx' closed, with M2's outcome,
+// 'k' and 'b' (VSIDS) or the payment 'reward' (CHB): its sums by age, by
+// count and by the bin of 'Y_v' frozen at the pick, and for a uniform pick
+// by that bin crossed with stale against recent.  Then 'Y_v' takes its
+// 'y_prop', or starts from it.  A pick whose propagation's end was not
+// seen, which only the unit tests make, is taken back.
+
+static void add_yield (kissat *solver, unsigned idx, unsigned state,
+                       uint64_t k, uint64_t b, double reward) {
+  feedback *const fb = &solver->policy.feedback;
+  assert (state & FEEDBACK_YIELD);
+  const unsigned prop = fb->propagated[idx];
+  const uint64_t obs = fb->observed[idx];
+  if (!prop) {
+    void_yield (fb, idx, state);
+    return;
+  }
+#ifndef NDEBUG
+  check_yield (solver, idx, prop, obs);
+#endif
+  reset_yield (fb, idx);
+  const unsigned kind = (state >> FEEDBACK_KIND_SHIFT) & 1;
+  const unsigned age = (state >> FEEDBACK_AGE_SHIFT) & 3;
+  const unsigned count = (state >> FEEDBACK_COUNT_SHIFT) & 3;
+  const unsigned bin = (state >> FEEDBACK_YIELD_SHIFT) & 7;
+  assert (bin < FEEDBACK_YIELDS);
+  feedback_yields *sums[4] = {&fb->m3.age[kind][age],
+                              &fb->m3.count[kind][count],
+                              &fb->m3.yield[kind][bin], 0};
+  if (kind == FEEDBACK_UNIFORM)
+    sums[3] = &fb->m3.crossed[age == FEEDBACK_AGE_RECENT][bin];
+  for (unsigned i = 0; i < 4; i++) {
+    feedback_yields *const s = sums[i];
+    if (!s)
+      continue;
+    s->n++;
+    s->k += k;
+    s->b += b;
+    s->bumped += b > 0;
+    s->r += reward;
+    s->prop += prop;
+    s->obs += obs;
+  }
+  double *const yield = fb->yield + idx;
+  const double alpha = FEEDBACK_YIELD_ALPHA;
+  *yield = *yield > 0 ? (1 - alpha) * *yield + alpha * prop : prop;
+}
+
+// M3: when an analysis step starts, before its backtracks, every open
+// pick's level with its variables now, and their trail segments, to be
+// added when the step's analyzed variables are bumped or recorded.  A
+// level's variables are its frame's count, which chronological
+// backtracking may leave below its trail segment, or above.  Assertion
+// builds count every level's variables from the trail and hold the
+// frames' counts to them.
+
+static void stage_yields (kissat *solver) {
+  feedback *const fb = &solver->policy.feedback;
+  CLEAR_STACK (fb->staged);
+  const unsigned level = solver->level;
+  const unsigned size = SIZE_ARRAY (solver->trail);
+  const uint16_t *const state = fb->state;
+  uint64_t levels = 0, segments = 0;
+  for (unsigned l = 1; l <= level; l++) {
+    const frame *const frame = &FRAME (l);
+    const unsigned idx = IDX (frame->decision);
+    if (!(state[idx] & FEEDBACK_YIELD))
+      continue;
+    assert (solver->assigned[idx].level == l);
+    const unsigned end = l < level ? FRAME (l + 1).trail : size;
+    assert (frame->trail <= end);
+    PUSH_STACK (fb->staged, idx);
+    PUSH_STACK (fb->staged, frame->assigned);
+    levels += frame->assigned;
+    segments += end - frame->trail;
+  }
+  fb->staged_levels = levels;
+  fb->staged_segments = segments;
+#ifndef NDEBUG
+  unsigneds *const counted = &fb->check.levels;
+  CLEAR_STACK (*counted);
+  for (unsigned l = 0; l <= level; l++)
+    PUSH_STACK (*counted, 0);
+  unsigned *const count = BEGIN_STACK (*counted);
+  const assigned *const assigned = solver->assigned;
+  for (all_stack (unsigned, lit, solver->trail)) {
+    const unsigned l = assigned[IDX (lit)].level;
+    assert (l <= level);
+    count[l]++;
+  }
+  CLEAR_STACK (fb->check.staged);
+  for (unsigned l = 1; l <= level; l++) {
+    const frame *const frame = &FRAME (l);
+    if (count[l] != frame->assigned)
+      kissat_fatal ("feedback: %u variables assigned at level %u, %u "
+                    "counted from the trail",
+                    frame->assigned, l, count[l]);
+    fb->check.steps++;
+    const unsigned idx = IDX (frame->decision);
+    if (!(state[idx] & FEEDBACK_YIELD))
+      continue;
+    PUSH_STACK (fb->check.staged, idx);
+    PUSH_STACK (fb->check.staged, count[l]);
+  }
+#endif
+}
+
+// M3: a step's analyzed variables are bumped (VSIDS) or recorded as CHB's
+// participants (CHB), so the step is a conflict of every open pick's
+// interval, which observes its level's variables taken when the step
+// started.  Outside a step, which only the unit tests make, they are
+// taken now.
+
+void kissat_feedback_observe (kissat *solver) {
+  feedback *const fb = &solver->policy.feedback;
+  if (!fb->started)
+    return;
+  assert (solver->stable);
+  if (!fb->analyzing)
+    stage_yields (solver);
+  uint64_t *const observed = fb->observed;
+  const unsigned *const end = END_STACK (fb->staged);
+  for (const unsigned *p = BEGIN_STACK (fb->staged); p != end; p += 2)
+    observed[p[0]] += p[1];
+  CLEAR_STACK (fb->staged);
+  fb->m3.levels += fb->staged_levels;
+  fb->m3.segments += fb->staged_segments;
+  fb->staged_levels = fb->staged_segments = 0;
+#ifndef NDEBUG
+  uint64_t *const counted = fb->check.observed;
+  const unsigned *const check_end = END_STACK (fb->check.staged);
+  for (const unsigned *p = BEGIN_STACK (fb->check.staged); p != check_end;
+       p += 2)
+    counted[p[0]] += p[1];
+  CLEAR_STACK (fb->check.staged);
+#endif
+}
+
+// M3: a search propagation ends.  If it is the one that follows a pick,
+// the pick's 'y_prop' is its level's trail segment, which holds only that
+// level, since every variable it assigned has the decision's level.
+
+void kissat_feedback_propagated (kissat *solver) {
+  feedback *const fb = &solver->policy.feedback;
+  const unsigned yielding = fb->yielding;
+  if (!yielding)
+    return;
+  fb->yielding = 0;
+  const unsigned idx = yielding - 1;
+  assert (fb->started);
+  assert (solver->stable);
+  assert (fb->state[idx] & FEEDBACK_YIELD);
+  const unsigned level = solver->level;
+  const frame *const frame = &FRAME (level);
+  assert (IDX (frame->decision) == idx);
+  assert (solver->assigned[idx].level == level);
+  const unsigned prop = SIZE_ARRAY (solver->trail) - frame->trail;
+  assert (prop == frame->assigned);
+  assert (prop >= 1);
+  fb->propagated[idx] = prop;
+#ifndef NDEBUG
+  unsigned counted = 0;
+  const assigned *const assigned = solver->assigned;
+  for (all_stack (unsigned, lit, solver->trail))
+    counted += assigned[IDX (lit)].level == level;
+  fb->check.propagated[idx] = counted;
+#endif
+}
+
 // VSIDS line: the interval of the active variable 'idx', of class 'c',
 // closes: at its unassignment in stable mode, after the bump round of the
 // analysis step whose backtrack ended it, or when stable mode is left.
 // Its rounds go to the count of its class, as UCB's do; a decided interval
 // adds to the sums of p_const; the interval of a pending pick is an event
-// of M1 and the pick's outcome in M2.  Every variable on the trail has its
-// interval open when it closes, except in the unit tests, which assign
-// some variables off the trail; for those there is nothing to close.
+// of M1 and the pick's outcome in M2 and M3.  Every variable on the trail
+// has its interval open when it closes, except in the unit tests, which
+// assign some variables off the trail; for those there is nothing to
+// close.
 
 static void close_interval (kissat *solver, unsigned idx, unsigned c) {
   feedback *const fb = &solver->policy.feedback;
@@ -455,9 +722,11 @@ static void close_interval (kissat *solver, unsigned idx, unsigned c) {
     fb->m1.sum_b += b;
   }
   const unsigned state = fb->state[idx];
-  if (state & FEEDBACK_PENDING && c != FEEDBACK_DEC)
+  assert (!(state & FEEDBACK_YIELD) == !(state & FEEDBACK_PENDING));
+  if (state & FEEDBACK_PENDING && c != FEEDBACK_DEC) {
     void_pick (fb, state);
-  else if (state & FEEDBACK_PENDING) {
+    void_yield (fb, idx, state);
+  } else if (state & FEEDBACK_PENDING) {
     fb->m1.events++;
     if (!k)
       fb->m1.zero++;
@@ -473,6 +742,7 @@ static void close_interval (kissat *solver, unsigned idx, unsigned c) {
         }
     }
     add_outcome (fb, state, k, b, 0);
+    add_yield (solver, idx, state, k, b, 0);
   }
   fb->state[idx] = 0;
   fb->opened[idx] = inc;
@@ -480,14 +750,48 @@ static void close_interval (kissat *solver, unsigned idx, unsigned c) {
   fb->bumps[idx] = 0;
 }
 
+// CHB line: the interval of the pending pick of 'idx' closes, for M3: at
+// its unassignment in stable mode, at the end of the analysis step whose
+// backtrack ended it, or when stable mode is left.  M2's outcome, its
+// payment, came at the propagation after the pick; a pick without one,
+// which only the unit tests make, is taken back from M2 and M3.
+
+static void close_yield (kissat *solver, unsigned idx) {
+  feedback *const fb = &solver->policy.feedback;
+  assert (fb->chb);
+  const unsigned state = fb->state[idx];
+  assert (state & FEEDBACK_YIELD);
+  if (state & FEEDBACK_PENDING) {
+    void_pick (fb, state);
+    void_yield (fb, idx, state);
+  } else
+    add_yield (solver, idx, state, 0, 0, fb->reward[idx]);
+  fb->state[idx] = 0;
+}
+
 // Stable-mode backtracking unassigned 'idx'.  Inside an analysis step the
-// close waits for the step's bump round, or its end (LRB's interval).
+// close waits for the step's bump round, or its end (LRB's interval), and
+// on the CHB line M3's close for the step's end.
 
 void kissat_feedback_unassign (kissat *solver, unsigned idx) {
   feedback *const fb = &solver->policy.feedback;
-  if (!fb->started || fb->chb)
+  if (!fb->started)
     return;
   assert (solver->stable);
+  if (fb->chb) {
+    uint16_t *const state = fb->state + idx;
+    if (!(*state & FEEDBACK_YIELD))
+      return;
+    if (!fb->analyzing) {
+      close_yield (solver, idx);
+      return;
+    }
+    assert (!(*state & FEEDBACK_CLOSING));
+    *state |= FEEDBACK_CLOSING;
+    PUSH_STACK (fb->deferred, idx);
+    fb->deferring = true;
+    return;
+  }
   const unsigned c = class_of (solver, idx);
   uint16_t *const state = fb->state + idx;
   if (!fb->analyzing || !(*state & FEEDBACK_OPEN)) {
@@ -504,13 +808,19 @@ void kissat_feedback_unassign (kissat *solver, unsigned idx) {
 }
 
 // The intervals deferred in the current step close, with the increment and
-// round counter of now: after its bump round, they count it.
+// round counter of now: after its bump round, they count it.  On the CHB
+// line M3's picks deferred to the step's end close, after its conflict.
 
 static void finish_deferred (kissat *solver) {
   feedback *const fb = &solver->policy.feedback;
   assert (fb->deferring);
   for (all_stack (unsigned, idx, fb->deferred)) {
     const unsigned state = fb->state[idx];
+    if (fb->chb) {
+      assert (state & FEEDBACK_CLOSING);
+      close_yield (solver, idx);
+      continue;
+    }
     assert (state & FEEDBACK_DEFERRED);
     const unsigned c =
         state & FEEDBACK_DEFERRED_IMP ? FEEDBACK_IMP : FEEDBACK_DEC;
@@ -520,18 +830,22 @@ static void finish_deferred (kissat *solver) {
   fb->deferring = false;
 }
 
-// VSIDS line: a step of conflict analysis starts, before its backtracks.
-// Assertion builds list the active variables assigned now, which the
+// A step of conflict analysis starts, before its backtracks.  M3 takes the
+// open picks' levels and their variables, on both lines.  On the VSIDS
+// line assertion builds list the active variables assigned now, which the
 // step's bump round observes.
 
 void kissat_feedback_begin_analysis (kissat *solver) {
   feedback *const fb = &solver->policy.feedback;
-  if (!fb->started || fb->chb || !solver->stable)
+  if (!fb->started || !solver->stable)
     return;
   assert (!fb->analyzing), assert (!fb->deferring);
   assert (EMPTY_STACK (fb->deferred));
   fb->analyzing = true;
+  stage_yields (solver);
 #ifndef NDEBUG
+  if (fb->chb)
+    return;
   unsigneds *const listed = &fb->check.listed;
   CLEAR_STACK (*listed);
   const flags *const flags = solver->flags;
@@ -542,12 +856,19 @@ void kissat_feedback_begin_analysis (kissat *solver) {
 }
 
 // The step ends, after its bump round if it had one: closes still deferred
-// (no round) happen now, without a round.
+// (no round) happen now, without a round, and M3's levels taken at its
+// start are dropped if its analyzed variables were neither bumped nor
+// recorded.
 
 void kissat_feedback_end_analysis (kissat *solver) {
   feedback *const fb = &solver->policy.feedback;
   if (!fb->analyzing)
     return;
+  CLEAR_STACK (fb->staged);
+  fb->staged_levels = fb->staged_segments = 0;
+#ifndef NDEBUG
+  CLEAR_STACK (fb->check.staged);
+#endif
   if (fb->deferring)
     finish_deferred (solver);
   fb->analyzing = false;
@@ -601,15 +922,22 @@ void kissat_feedback_round_end (kissat *solver) {
 }
 
 // Every variable still assigned when stable mode is left closes its
-// interval.  Entering stable mode opens one for every assigned variable at
-// the next record.
+// interval, and on the CHB line every pick still pending in M3.  Entering
+// stable mode opens one for every assigned variable at the next record.
 
 void kissat_leave_stable_feedback (kissat *solver) {
   const feedback *const fb = &solver->policy.feedback;
-  if (!fb->started || fb->chb)
+  if (!fb->started)
     return;
   assert (solver->stable);
   assert (!fb->analyzing);
+  assert (!fb->yielding);
+  if (fb->chb) {
+    for (all_stack (unsigned, lit, solver->trail))
+      if (fb->state[IDX (lit)] & FEEDBACK_YIELD)
+        close_yield (solver, IDX (lit));
+    return;
+  }
   kissat_record_feedback (solver);
   const flags *const flags = solver->flags;
   const unsigned *const begin = BEGIN_ARRAY (solver->trail);
@@ -646,7 +974,8 @@ void kissat_rescale_feedback (kissat *solver, double factor) {
 // CHB line: a payment.  If its variable is decided it is an event of M1,
 // whose predictors are read before the update; the ERWA of its class,
 // its payments, UCB's count and its latest payment follow; and a pending
-// pick of the variable has its outcome.
+// pick of the variable has its outcome in M2, which M3 keeps until the
+// pick's interval closes.
 
 void kissat_feedback_paid (kissat *solver, unsigned idx, double reward,
                            double alpha, double old_q,
@@ -686,11 +1015,16 @@ void kissat_feedback_paid (kissat *solver, unsigned idx, double reward,
   fb->latest[idx] = conflicts;
   const unsigned state = fb->state[idx];
   if (state & FEEDBACK_PENDING) {
-    if (c == FEEDBACK_DEC)
+    assert (state & FEEDBACK_YIELD);
+    if (c == FEEDBACK_DEC) {
       add_outcome (fb, state, 0, 0, reward);
-    else
+      fb->reward[idx] = reward;
+      fb->state[idx] = state & ~FEEDBACK_PENDING;
+    } else {
       void_pick (fb, state);
-    fb->state[idx] = 0;
+      void_yield (fb, idx, state);
+      fb->state[idx] = 0;
+    }
   }
 }
 
@@ -815,7 +1149,9 @@ static void complete_check (kissat *solver) {
 // its outcome, with its kind and its variable's age and count bins, and on
 // the VSIDS line the four predictors of M1 are frozen: the variable is
 // assigned as a decision right after the pick, and its counts and the sums
-// of p_const do not change before its interval opens.
+// of p_const do not change before its interval opens.  For M3 it is
+// pending until its interval closes, with the bin of 'Y_v', and awaits the
+// end of the propagation that follows its decision.
 
 void kissat_feedback_pick (kissat *solver, unsigned idx, bool uniform) {
   feedback *const fb = &solver->policy.feedback;
@@ -831,8 +1167,13 @@ void kissat_feedback_pick (kissat *solver, unsigned idx, bool uniform) {
   assert (!(old_state & FEEDBACK_OPEN));
   if (old_state & FEEDBACK_PENDING)
     void_pick (fb, old_state);
+  if (old_state & FEEDBACK_YIELD)
+    void_yield (fb, idx, old_state);
+  assert (!fb->propagated[idx]), assert (!fb->observed[idx]);
   const unsigned kind = uniform ? FEEDBACK_UNIFORM : FEEDBACK_POLICY;
   fb->m2.picks[kind]++;
+  fb->m3.picks[kind]++;
+  fb->yielding = idx + 1;
   unsigned age;
   double count;
   if (fb->chb) {
@@ -862,7 +1203,9 @@ void kissat_feedback_pick (kissat *solver, unsigned idx, bool uniform) {
   }
   fb->state[idx] = FEEDBACK_PENDING | kind << FEEDBACK_KIND_SHIFT |
                    age << FEEDBACK_AGE_SHIFT |
-                   count_bin (count) << FEEDBACK_COUNT_SHIFT;
+                   count_bin (count) << FEEDBACK_COUNT_SHIFT |
+                   FEEDBACK_YIELD |
+                   yield_bin (fb->yield[idx]) << FEEDBACK_YIELD_SHIFT;
 }
 
 #ifndef QUIET
@@ -878,6 +1221,9 @@ static const char *const age_names[FEEDBACK_AGES] = {"never", "old",
                                                      "stale", "recent"};
 static const char *const count_names[FEEDBACK_COUNTS] = {
     "zero", "below1", "below5", "above5"};
+static const char *const yield_names[FEEDBACK_YIELDS] = {
+    "none", "below2", "below4", "below16", "below64", "above64"};
+static const char *const cross_names[2] = {"stale", "recent"};
 
 static void print_count (kissat *solver, const char *prefix,
                          const char *name, uint64_t value) {
@@ -921,11 +1267,32 @@ static void print_sums (kissat *solver, const char *prefix,
   }
 }
 
+// M3's sums of a set of picks: 'n', M2's outcome with 'outcomes' ('k', 'b'
+// and 'bumped', or 'r'), and the sums of 'y_prop' and 'y_obs'.
+
+static void print_yields (kissat *solver, const char *prefix,
+                          const feedback_yields *sums, bool chb,
+                          bool outcomes) {
+  print_count (solver, prefix, "n", sums->n);
+  if (outcomes && chb)
+    print_double (solver, prefix, "r", sums->r);
+  else if (outcomes) {
+    print_count (solver, prefix, "k", sums->k);
+    print_count (solver, prefix, "b", sums->b);
+    print_count (solver, prefix, "bumped", sums->bumped);
+  }
+  print_count (solver, prefix, "prop", sums->prop);
+  print_count (solver, prefix, "obs", sums->obs);
+}
+
 #endif
 
 // The 'feedback' section (see 'docs/feedback.md' for every line).  M2's
-// picks still open at the end are those pending, and every pick is an
-// outcome or open (checked in assertion builds).
+// and M3's picks still open at the end are those pending, and every pick
+// is an outcome or open; M3's outcomes by age, by count and by the bin of
+// 'Y_v' are the same, and its uniform outcomes crossed with stale against
+// recent are its uniform outcomes by that bin (checked in assertion
+// builds).
 
 void kissat_print_feedback_statistics (kissat *solver) {
 #ifndef QUIET
@@ -933,11 +1300,15 @@ void kissat_print_feedback_statistics (kissat *solver) {
   const bool chb = fb->started ? fb->chb : kissat_chb (solver);
   const char *const line = chb ? "chb" : "vsids";
   uint64_t open[FEEDBACK_KINDS] = {0, 0};
+  uint64_t yielding[FEEDBACK_KINDS] = {0, 0};
   if (fb->started)
     for (all_variables (idx)) {
       const unsigned state = fb->state[idx];
+      const unsigned kind = (state >> FEEDBACK_KIND_SHIFT) & 1;
       if (state & FEEDBACK_PENDING)
-        open[(state >> FEEDBACK_KIND_SHIFT) & 1]++;
+        open[kind]++;
+      if (state & FEEDBACK_YIELD)
+        yielding[kind]++;
     }
   for (unsigned kind = 0; kind < FEEDBACK_KINDS; kind++) {
     uint64_t by_age = 0, by_count = 0;
@@ -952,6 +1323,37 @@ void kissat_print_feedback_statistics (kissat *solver) {
                     " open",
                     fb->m2.picks[kind], kind_names[kind], by_age, by_count,
                     open[kind]);
+#endif
+    }
+    uint64_t m3_age = 0, m3_count = 0, m3_yield = 0;
+    for (unsigned i = 0; i < FEEDBACK_AGES; i++)
+      m3_age += fb->m3.age[kind][i].n;
+    for (unsigned i = 0; i < FEEDBACK_COUNTS; i++)
+      m3_count += fb->m3.count[kind][i].n;
+    for (unsigned i = 0; i < FEEDBACK_YIELDS; i++)
+      m3_yield += fb->m3.yield[kind][i].n;
+    if (m3_age != m3_count || m3_age != m3_yield ||
+        fb->m3.picks[kind] != m3_age + yielding[kind]) {
+#ifndef NDEBUG
+      kissat_fatal ("feedback: M3: %" PRIu64 " %s picks, %" PRIu64
+                    ", %" PRIu64 " and %" PRIu64 " outcomes by age, count "
+                    "and yield, %" PRIu64 " open",
+                    fb->m3.picks[kind], kind_names[kind], m3_age, m3_count,
+                    m3_yield, yielding[kind]);
+#endif
+    }
+  }
+  for (unsigned i = 0; i < FEEDBACK_YIELDS; i++) {
+    const feedback_yields *const all = &fb->m3.yield[FEEDBACK_UNIFORM][i];
+    const feedback_yields *const stale = &fb->m3.crossed[0][i];
+    const feedback_yields *const recent = &fb->m3.crossed[1][i];
+    if (all->n != stale->n + recent->n ||
+        all->prop != stale->prop + recent->prop ||
+        all->obs != stale->obs + recent->obs) {
+#ifndef NDEBUG
+      kissat_fatal ("feedback: M3: %" PRIu64 " uniform outcomes of yield "
+                    "%s, %" PRIu64 " stale and %" PRIu64 " recent",
+                    all->n, yield_names[i], stale->n, recent->n);
 #endif
     }
   }
@@ -1004,6 +1406,36 @@ void kissat_print_feedback_statistics (kissat *solver) {
       print_sums (solver, prefix, &fb->m2.count[kind][i], chb, true, 0);
     }
   }
+  for (unsigned kind = 0; kind < FEEDBACK_KINDS; kind++) {
+    snprintf (prefix, sizeof prefix, "feedback-m3-%s-%s-", line,
+              kind_names[kind]);
+    print_count (solver, prefix, "picks", fb->m3.picks[kind]);
+    print_count (solver, prefix, "open", yielding[kind]);
+    for (unsigned i = 0; i < FEEDBACK_AGES; i++) {
+      snprintf (prefix, sizeof prefix, "feedback-m3-%s-%s-age-%s-", line,
+                kind_names[kind], age_names[i]);
+      print_yields (solver, prefix, &fb->m3.age[kind][i], chb, false);
+    }
+    for (unsigned i = 0; i < FEEDBACK_COUNTS; i++) {
+      snprintf (prefix, sizeof prefix, "feedback-m3-%s-%s-count-%s-", line,
+                kind_names[kind], count_names[i]);
+      print_yields (solver, prefix, &fb->m3.count[kind][i], chb, false);
+    }
+    for (unsigned i = 0; i < FEEDBACK_YIELDS; i++) {
+      snprintf (prefix, sizeof prefix, "feedback-m3-%s-%s-yield-%s-", line,
+                kind_names[kind], yield_names[i]);
+      print_yields (solver, prefix, &fb->m3.yield[kind][i], chb, true);
+    }
+  }
+  for (unsigned recent = 0; recent < 2; recent++)
+    for (unsigned i = 0; i < FEEDBACK_YIELDS; i++) {
+      snprintf (prefix, sizeof prefix, "feedback-m3-%s-uniform-%s-yield-%s-",
+                line, cross_names[recent], yield_names[i]);
+      print_yields (solver, prefix, &fb->m3.crossed[recent][i], chb, true);
+    }
+  snprintf (prefix, sizeof prefix, "feedback-m3-%s-", line);
+  print_count (solver, prefix, "obs-levels", fb->m3.levels);
+  print_count (solver, prefix, "obs-segments", fb->m3.segments);
 #ifndef NDEBUG
   kissat_message (solver, "feedback-check-complete %" PRIu64,
                   fb->check.complete);
@@ -1017,6 +1449,10 @@ void kissat_print_feedback_statistics (kissat *solver) {
                   fb->check.payments);
   kissat_message (solver, "feedback-check-intervals %" PRIu64,
                   fb->check.intervals);
+  kissat_message (solver, "feedback-check-levels %" PRIu64,
+                  fb->check.steps);
+  kissat_message (solver, "feedback-check-yields %" PRIu64,
+                  fb->check.yields);
 #endif
 #else
   (void) solver;
