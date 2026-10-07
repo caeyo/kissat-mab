@@ -120,9 +120,9 @@ static void test_keys_options (void) {
   assert (!start_fails ("ucb", 1, "chb", 1));
   assert (!start_fails ("perturbed", 1, "redraw", 1));
   assert (!start_fails ("softmax", 1, "gammappm", 100));
-  assert (start_fails ("ucbinterval", 1, "thompson", 1));
-  assert (start_fails ("ucbinterval", 1, "softmax", 1));
-  assert (!start_fails ("ucbinterval", 1, "ucb", 1));
+  assert (!start_fails ("ucbinterval", 0, "thompson", 1));
+  assert (!start_fails ("ucbinterval", 0, "softmax", 1));
+  assert (!start_fails ("ucbinterval", 0, "ucb", 1));
 }
 
 // Each policy keeps an unweighted tree, the arrays it needs, and its keys:
@@ -552,24 +552,17 @@ static void check_ucb_interval (bool interval) {
 static void test_keys_ucb_interval (void) {
   check_ucb_interval (true);
   check_ucb_interval (false);
-  // 'ucbinterval' needs UCB on VSIDS scores.
-  kissat *solver = kissat_init ();
-  kissat_set_option (solver, "chb", 1);
-  kissat_set_option (solver, "ucb", 1);
-  kissat_set_option (solver, "ucbinterval", 1);
-  for (int i = 1; i <= 4; i++)
-    kissat_add (solver, i);
-  kissat_add (solver, 0);
-  solver->stable = true;
-  kissat_update_scores (solver);
-  bool failed = false;
-  kissat_call_function_instead_of_abort (abort_call_back);
-  if (setjmp (jump_buffer))
-    failed = true;
-  else
-    kissat_start_policy (solver);
-  kissat_call_function_instead_of_abort (0);
-  assert (failed);
+  // LRB's interval is the default, and the option is ignored but for UCB
+  // on VSIDS scores.
+  kissat *solver = new_solver (4, "ucb", 1, 0, 0);
+  assert (GET_OPTION (ucbinterval) == 1);
+  assert (solver->policy.keys.interval);
+  kissat_release (solver);
+  solver = new_solver (4, "ucb", 1, "chb", 1);
+  assert (!solver->policy.keys.interval);
+  kissat_release (solver);
+  solver = new_solver (4, "thompson", 1, "ucbinterval", 0);
+  assert (!solver->policy.keys.interval);
   kissat_release (solver);
 }
 

@@ -85,8 +85,9 @@
 //   rounds completed while a variable is assigned never include the
 //   conflict whose backjump unassigns it: the count lags LRB's interval
 //   (Liang et al. 2016) by that conflict, where most of a variable's bumps
-//   land.  This is stage 2's count, and the default.  With 'ucbinterval=1'
-//   the count is LRB's interval: a bump round observes every variable
+//   land.  This was stage 2's count, which 'ucbinterval=0' keeps.  By
+//   default ('ucbinterval=1') the count is LRB's interval, the option being
+//   ignored but for UCB on VSIDS scores: a bump round observes every variable
 //   assigned when the analysis step that makes it starts, before the
 //   step's backtracks.  A step is one round of 'kissat_analyze', between
 //   'kissat_policy_begin_analysis' and 'kissat_policy_end_analysis'.  An

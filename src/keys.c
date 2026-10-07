@@ -309,12 +309,9 @@ void kissat_start_keys (kissat *solver) {
   const unsigned thompson = GET_OPTION (thompson);
   const unsigned ucb = GET_OPTION (ucb);
   const unsigned softmax = GET_OPTION (softmax);
-  const unsigned interval = GET_OPTION (ucbinterval);
   if (softmax + perturbed + thompson + ucb > 1)
     kissat_fatal ("at most one of the options 'softmax', 'perturbed', "
                   "'thompson' and 'ucb' can be set");
-  if (interval && !ucb)
-    kissat_fatal ("'ucbinterval' needs 'ucb=1'");
   if (!(perturbed | thompson | ucb))
     return;
   if (GET_OPTION (gammappm))
@@ -323,8 +320,6 @@ void kissat_start_keys (kissat *solver) {
   const bool chb = kissat_chb (solver);
   if (perturbed && chb)
     kissat_fatal ("'perturbed' needs VSIDS scores ('chb=0')");
-  if (interval && chb)
-    kissat_fatal ("'ucbinterval' needs VSIDS scores ('chb=0')");
   policy *const policy = &solver->policy;
   keys *const keys = &policy->keys;
   if (keys->kind)
@@ -343,7 +338,7 @@ void kissat_start_keys (kissat *solver) {
   keys->noise = perturbed || keys->factor > 0;
   keys->counts = ucb || (thompson && chb);
   keys->intervals = ucb && !chb;
-  keys->interval = interval;
+  keys->interval = keys->intervals && GET_OPTION (ucbinterval);
   const double decay = GET_OPTION (decay) * 1e-3;
   keys->growth = 1.0 / (1.0 - decay);
   keys->increment = 1;
@@ -360,7 +355,7 @@ void kissat_start_keys (kissat *solver) {
   else
     kissat_very_verbose (solver, "upper confidence bounds at c %g%s",
                          keys->factor,
-                         interval ? " counting LRB's interval" : "");
+                         keys->interval ? " counting LRB's interval" : "");
   if (solver->stable) {
     keys->counted = 0;
     kissat_draw_keys (solver);
