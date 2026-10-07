@@ -224,7 +224,8 @@ static void compact_scores (kissat *solver, heap *old_scores,
 // their variables, so UCB's record of the trail stays where it is (see
 // 'keys.h'): recording the trail again from its start would give every
 // variable assigned now the current increment, and so lose the bump rounds
-// it spent assigned before.
+// it spent assigned before.  The same holds for feedback builds, whose
+// sums, intervals and pending picks move too (see 'feedback.h').
 
 static void compact_policy (kissat *solver, unsigned vars) {
   LOG ("compacting scores and policy tree");
@@ -248,6 +249,9 @@ static void compact_policy (kissat *solver, unsigned vars) {
     if (mixing)
       kissat_indicator_move (uniform, idx, midx);
     kissat_move_keys (keys, idx, midx);
+#ifdef FEEDBACK
+    kissat_move_feedback (solver, idx, midx);
+#endif
   }
   for (unsigned idx = vars; idx < VARS; idx++) {
     score[idx] = 0;
@@ -256,6 +260,9 @@ static void compact_policy (kissat *solver, unsigned vars) {
     if (mixing)
       kissat_indicator_put (uniform, idx, false);
     kissat_clear_keys (keys, idx);
+#ifdef FEEDBACK
+    kissat_clear_feedback (solver, idx);
+#endif
   }
   kissat_rebuild_tree (tree);
   if (mixing)

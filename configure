@@ -17,6 +17,7 @@ default=no
 heapargmax=no
 embedded=unknown
 extreme=no
+feedback=no
 kitten=unknown
 logging=unknown
 lto=no
@@ -184,6 +185,11 @@ run them.  For builds that must carry no instrumentation:
 
    --no-decision-metrics  compile the decision metrics out
 
+Phase 3's measurements of the decision's feedback, M1 and M2, for its
+measurement runs only (see 'src/feedback.h'); other builds have none:
+
+   --feedback       measure the feedback (tree builds, off by default)
+
 We also allow an explicit choice of the C compiler.
 
   CC=<compiler>     default is 'gcc' (and we regularly test with 'CC=clang')
@@ -317,6 +323,7 @@ do
     --heap-argmax) heapargmax=yes;;
     --shadow) shadow=yes;;
     --no-decision-metrics) decisionmetrics=no;;
+    --feedback) feedback=yes;;
     --check-kitten) check_kitten=yes;;
     --check-queue) check_queue=yes;;
     --check-vectors) check_vectors=yes;;
@@ -501,6 +508,8 @@ then
 fi
 [ $heapargmax = yes -a $shadow = yes ] && \
   die "can not combine '--heap-argmax' and '--shadow'"
+[ $heapargmax = yes -a $feedback = yes ] && \
+  die "can not combine '--heap-argmax' and '--feedback'"
 
 [ $check_heap = yes ] && check=yes
 [ $shadow = yes ] && check=yes
@@ -629,6 +638,7 @@ esac
 [ $heapargmax = yes ] && CFLAGS="$CFLAGS -DHEAPARGMAX"
 [ $shadow = yes ] && CFLAGS="$CFLAGS -DSHADOW"
 [ $decisionmetrics = no ] && CFLAGS="$CFLAGS -DNDECISIONMETRICS"
+[ $feedback = yes ] && CFLAGS="$CFLAGS -DFEEDBACK"
 [ $check_kitten = yes ] && CFLAGS="$CFLAGS -DCHECK_KITTEN"
 [ $check_queue = yes ] && CFLAGS="$CFLAGS -DCHECK_QUEUE"
 [ $check_vectors = yes ] && CFLAGS="$CFLAGS -DCHECK_VECTORS"

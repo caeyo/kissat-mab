@@ -77,6 +77,15 @@
 // 'kissat_bump_score', where TS recomputes the term, CHB's payments count
 // observations for UCB and TS, and UCB recomputes a variable's term when
 // stable-mode backtracking unassigns it.
+//
+// Each step of conflict analysis is bracketed by
+// 'kissat_policy_begin_analysis' and 'kissat_policy_end_analysis'.  UCB
+// counting LRB's interval ('ucbinterval=1', see 'keys.h') defers there the
+// closes of the intervals that the step's backtracks end to the step's bump
+// round, and so do feedback builds (see 'feedback.h'), which also close a
+// variable's interval when stable-mode backtracking unassigns it outside a
+// step, rescale their sums with the scores, and keep their record of the
+// trail below its size.
 
 #include "chb.h"
 #include "internal.h"
@@ -323,6 +332,9 @@ static inline void kissat_scale_scores (kissat *solver, double factor) {
 #endif
   if (solver->policy.keys.intervals)
     kissat_rescale_keys (solver, factor);
+#ifdef FEEDBACK
+  kissat_rescale_feedback (solver, factor);
+#endif
   if (!solver->policy.bulk)
     kissat_rebuild_policy (solver);
 }
@@ -362,6 +374,11 @@ static inline void kissat_policy_shrink_trail (kissat *solver,
   unsigned *const counted = &solver->policy.keys.counted;
   if (*counted > size)
     *counted = size;
+#ifdef FEEDBACK
+  unsigned *const recorded = &solver->policy.feedback.counted;
+  if (*recorded > size)
+    *recorded = size;
+#endif
 }
 
 // P1, TS and UCB: backtracking in stable mode unassigned 'idx'.  On VSIDS
@@ -481,6 +498,9 @@ static inline void kissat_policy_unassign (kissat *solver, unsigned idx) {
   indicator *const uniform = &policy->uniform;
   if (uniform->enabled && !kissat_indicator_contains (uniform, idx))
     kissat_indicator_insert (uniform, idx);
+#ifdef FEEDBACK
+  kissat_feedback_unassign (solver, idx); // closes the interval
+#endif
 }
 
 // 'idx' was activated in stable mode and is unassigned.  Under P1 and TS
@@ -561,6 +581,9 @@ static inline void kissat_bump_score (kissat *solver, unsigned idx,
 // variables assigned now.
 
 static inline void kissat_policy_begin_analysis (kissat *solver) {
+#ifdef FEEDBACK
+  kissat_feedback_begin_analysis (solver); // LRB's interval too
+#endif
   keys *const keys = &solver->policy.keys;
   if (!keys->interval || !solver->stable)
     return;
@@ -582,6 +605,9 @@ static inline void kissat_policy_begin_analysis (kissat *solver) {
 // deferred (no bump round) close without a round.
 
 static inline void kissat_policy_end_analysis (kissat *solver) {
+#ifdef FEEDBACK
+  kissat_feedback_end_analysis (solver);
+#endif
   keys *const keys = &solver->policy.keys;
   if (!keys->analyzing)
     return;

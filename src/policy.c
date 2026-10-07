@@ -515,6 +515,9 @@ unsigned kissat_policy_pick (kissat *solver) {
 #ifdef SHADOW
   shadow_pick (solver, res, uniform);
 #endif
+#ifdef FEEDBACK
+  kissat_feedback_pick (solver, res, uniform); // M2's pick, M1's event
+#endif
   assert (ACTIVE (res));
   assert (!VALUE (LIT (res)));
   return res;
@@ -560,6 +563,9 @@ void kissat_update_scores (kissat *solver) {
     kissat_draw_keys (solver);
   } else if (added || kissat_chb (solver))
     kissat_rebuild_policy (solver);
+#ifdef FEEDBACK
+  kissat_enter_stable_feedback (solver); // opens the intervals
+#endif
   indicator *const uniform = &solver->policy.uniform;
   if (!uniform->enabled)
     return;
@@ -579,6 +585,9 @@ void kissat_release_policy (kissat *solver) {
   kissat_release_tree (solver, &solver->policy.tree);
   kissat_release_indicator (solver, &solver->policy.uniform);
   kissat_release_keys (solver);
+#ifdef FEEDBACK
+  kissat_release_feedback (solver);
+#endif
 }
 
 // Present leaves take their keys and weights from the estimator again,
@@ -781,6 +790,9 @@ void kissat_start_policy (kissat *solver) {
   if (kissat_chb (solver))
     kissat_very_verbose (solver, "CHB scores in stable mode");
   kissat_start_keys (solver);
+#ifdef FEEDBACK
+  kissat_start_feedback (solver);
+#endif
   const unsigned gammappm = GET_OPTION (gammappm);
   if (gammappm && !policy->uniform.enabled)
     start_mixing (solver, gammappm);
@@ -846,6 +858,11 @@ void kissat_print_policy_statistics (kissat *solver) {
   kissat_message (solver, "policy-draw-seconds %.9g",
                   hz ? policy->keys.ticks / hz : 0);
   kissat_message (solver, "policy-clock-hz %.9g", hz);
+#endif
+#ifdef FEEDBACK
+  // Printed here rather than by 'kissat_print_statistics', since a line
+  // added there would move a line number compiled into 'internal.o'.
+  kissat_print_feedback_statistics (solver); // the 'feedback' section
 #endif
 #else
   (void) solver;

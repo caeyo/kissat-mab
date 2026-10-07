@@ -83,6 +83,9 @@ void kissat_bump_score_increment (kissat *solver) {
     kissat_finish_deferred_keys (solver);
     kissat_record_keys (solver);
   }
+#ifdef FEEDBACK
+  kissat_feedback_round_end (solver); // LRB's interval, as above
+#endif
 #endif
   if (new_scinc > MAX_SCORE)
     kissat_rescale_scores (solver);
@@ -105,9 +108,14 @@ void kissat_bump_variable (kissat *solver, unsigned idx) {
 
 // A bump round: every analyzed variable, then the increment.  It is
 // counted when it starts, so that a rescale during the round, triggered by
-// a score or by the increment, sees the number of the round.
+// a score or by the increment, sees the number of the round.  Feedback
+// builds open the intervals of the variables assigned since their last
+// record before the round, and count every bump (see 'feedback.h').
 
 static void bump_analyzed_variable_scores (kissat *solver) {
+#ifdef FEEDBACK
+  kissat_feedback_round (solver); // opens intervals before the round
+#endif
   solver->estimator.rounds++;
 #ifdef SHADOW
   kissat_shadow_round (solver); // recounts UCB's observations
@@ -115,8 +123,12 @@ static void bump_analyzed_variable_scores (kissat *solver) {
   flags *flags = solver->flags;
 
   for (all_stack (unsigned, idx, solver->analyzed))
-    if (flags[idx].active)
+    if (flags[idx].active) {
+#ifdef FEEDBACK
+      kissat_feedback_bump (solver, idx); // before the score's bump
+#endif
       bump_analyzed_variable_score (solver, idx);
+    }
 
   kissat_bump_score_increment (solver);
 }

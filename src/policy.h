@@ -151,6 +151,12 @@
 // would add it (without changing anything), must equal its recount to a
 // relative error of 'SHADOW_RECOUNT_TOLERANCE' of 1 + N, the quantity its
 // term depends on.
+//
+// Feedback builds ('./configure --feedback', '-DFEEDBACK'): a tree build
+// that also measures the feedback of the decision, Phase 3's M1 and M2
+// (see 'feedback.h'), through hooks at the pick, the bump round, CHB's
+// payments, stable-mode unassignment, leaving and entering stable mode,
+// rescales and compaction.  Nothing in the solver reads the measurements.
 
 #if defined(HEAPARGMAX) && defined(SHADOW)
 #error "'HEAPARGMAX' and 'SHADOW' exclude each other"
@@ -201,6 +207,7 @@ struct estimator {
 
 #ifndef HEAPARGMAX
 
+#include "feedback.h"
 #include "indicator.h"
 #include "keys.h"
 #include "random.h"
@@ -245,6 +252,9 @@ struct policy {
   tree tree;         // the available variables, their keys and weights
   indicator uniform; // mixing: the available variables, drawn uniformly
   keys keys;         // P1, TS and UCB: their terms and counts
+#ifdef FEEDBACK
+  feedback feedback; // feedback builds: M1 and M2 (see 'feedback.h')
+#endif
   generator random;  // the policy's own generator
   double gamma;      // mixing: probability of a uniform pick (0: none)
   bool bulk;         // tree updates deferred until a rebuild

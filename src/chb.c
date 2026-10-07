@@ -9,7 +9,8 @@
 
 // Under UCB and TS (see 'keys.h') every payment is also an observation of
 // the variable, and the counts' increment grows at every conflict after
-// its payments.
+// its payments.  Feedback builds measure every payment, and keep UCB's
+// counts whatever the options (see 'feedback.h').
 
 void kissat_chb_assign (kissat *solver, bool conflict) {
   estimator *const estimator = &solver->estimator;
@@ -26,6 +27,10 @@ void kissat_chb_assign (kissat *solver, bool conflict) {
   if (played >= size) {
     if (conflict && counts)
       kissat_keys_chb_conflict (solver);
+#ifdef FEEDBACK
+    if (conflict)
+      kissat_feedback_chb_conflict (solver);
+#endif
     return;
   }
   const double alpha = kissat_chb_alpha (conflicts);
@@ -50,15 +55,25 @@ void kissat_chb_assign (kissat *solver, bool conflict) {
     kissat_update_assigned_score (solver, idx, new_q);
     if (counts)
       kissat_keys_paid (solver, idx);
+#ifdef FEEDBACK
+    kissat_feedback_paid (solver, idx, reward, alpha, old_q, conflicts);
+#endif
 #ifdef SHADOW
     if (counts)
       kissat_shadow_paid (solver, idx, conflicts); // recounts observations
+#ifdef FEEDBACK
+    kissat_shadow_feedback_paid (solver, idx); // counts payments
+#endif
 #endif
     plays++;
   }
   estimator->chb.plays += plays;
   if (conflict && counts)
     kissat_keys_chb_conflict (solver);
+#ifdef FEEDBACK
+  if (conflict)
+    kissat_feedback_chb_conflict (solver);
+#endif
 }
 
 // On-the-fly strengthening analyses one conflict in several rounds, each
