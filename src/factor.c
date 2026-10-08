@@ -853,9 +853,9 @@ adjust_scores_and_phases_of_fresh_variables (factoring *factoring) {
       LOG ("unbumping fresh[%zu] %s", (size_t) (p - begin - 1),
            LOGVAR (idx));
       // Kissat's score zero, plus the pseudo-activity (see 'policy.h'),
-      // which is zero with CHB scores.
+      // which is zero with CHB scores, stored as the reward's locality has.
       const double score = kissat_pseudo_activity (solver);
-      kissat_update_score (solver, idx, score);
+      kissat_update_true_score (solver, idx, score);
     }
   }
   {

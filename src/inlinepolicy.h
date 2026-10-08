@@ -93,6 +93,14 @@
 // the intervals that the step's backtracks end to the step's bump round,
 // or its end, and conflict analysis marks the literal it asserts
 // ('kissat_policy_asserted').
+//
+// Phase 4's reward (tree builds, see 'reward.h') weights a bump by the
+// class of its interval, and under locality keeps the scores lazily, an
+// unassigned variable's times a multiplier g, so that a score written in
+// true units goes through 'kissat_update_true_score' or
+// 'kissat_true_weight', and the scores and the quantities in the units of
+// the increment are rescaled by factors of their own.  In HeapArgmax
+// builds these are the plain writes.
 
 #include "chb.h"
 #include "internal.h"
@@ -178,6 +186,17 @@ static inline void kissat_end_bulk_score_change (kissat *solver) {
 static inline void kissat_bump_score (kissat *solver, unsigned idx,
                                       double score) {
   kissat_update_score (solver, idx, score);
+}
+
+static inline void kissat_update_true_score (kissat *solver, unsigned idx,
+                                             double score) {
+  kissat_update_score (solver, idx, score);
+}
+
+static inline double kissat_true_weight (kissat *solver, unsigned idx,
+                                         double weight) {
+  (void) solver, (void) idx;
+  return weight;
 }
 
 #else
@@ -290,6 +309,40 @@ static inline void kissat_update_score (kissat *solver, unsigned idx,
     kissat_policy_set_leaf (solver, idx);
 }
 
+// A score in true units written while 'idx' is unassigned, at activation
+// or by bounded variable addition: under the reward's locality the stored
+// value is the score times the multiplier g (see 'reward.h').
+
+static inline void kissat_update_true_score (kissat *solver, unsigned idx,
+                                             double score) {
+  const reward *const reward = &solver->policy.reward;
+  if (reward->locality) {
+    assert (!VALUE (LIT (idx)));
+#ifndef NDEBUG
+    kissat_check_reward_true_score (solver, idx, score, false);
+#endif
+    score *= reward->g;
+  }
+  kissat_update_score (solver, idx, score);
+}
+
+// 'reorder's weight of the unassigned 'idx', in true units, as it is
+// added to its stored value: times g under locality.
+
+static inline double kissat_true_weight (kissat *solver, unsigned idx,
+                                         double weight) {
+  const reward *const reward = &solver->policy.reward;
+  if (!reward->locality)
+    return weight;
+  assert (!VALUE (LIT (idx)));
+#ifndef NDEBUG
+  kissat_check_reward_true_score (solver, idx, weight, true);
+#else
+  (void) idx;
+#endif
+  return weight * reward->g;
+}
+
 // CHB's payment of the assigned variable 'idx': the estimator (and the
 // heap of shadow builds) gets the new score, the tree does not.  Its leaf,
 // if lazy deletion still keeps it, lags the score until backtracking
@@ -328,9 +381,13 @@ static inline double kissat_max_score (kissat *solver) {
 
 // UCB's counts on VSIDS scores are kept in units of the score increment,
 // and are rescaled with the scores, as are the increments at assignment of
-// the intervals and the feedback build's sums (see 'intervals.h').
+// the intervals and the feedback build's sums (see 'intervals.h'), by
+// 'unit', the increment's factor, which is 'factor' but under the reward's
+// locality, whose stored values are the true ones times g (see
+// 'reward.h').
 
-static inline void kissat_scale_scores (kissat *solver, double factor) {
+static inline void kissat_scale_scores (kissat *solver, double factor,
+                                        double unit) {
   LOG ("rescaling scores with factor %g", factor);
   double *const score = solver->score;
   for (all_variables (idx))
@@ -339,7 +396,7 @@ static inline void kissat_scale_scores (kissat *solver, double factor) {
   kissat_rescale_heap (solver, SCORES, factor);
 #endif
   if (solver->policy.intervals.started)
-    kissat_rescale_intervals (solver, factor);
+    kissat_rescale_intervals (solver, unit);
   if (!solver->policy.bulk)
     kissat_rebuild_policy (solver);
 }
@@ -358,13 +415,14 @@ static inline unsigned kissat_assignment_class (kissat *solver,
 }
 
 // The active literals assigned since the last record open their intervals
-// with their class, the current score increment and the current bump
-// round, the ones they were assigned at, since neither has changed since
-// (see 'intervals.h').  Called at the start of every bump round, before
-// every stable-mode backtrack, before rescales and when stable mode is
-// left.  While closes are deferred (LRB's interval), the literals assigned
-// since the step's backtrack wait for its bump round, which records them
-// after it, or for the next record after its end.
+// with their class, the current score increment, the current bump round
+// and the reward's multiplier g, the ones they were assigned at, since none
+// has changed since (see 'intervals.h').  Called at the start of every bump
+// round, before every stable-mode backtrack, before rescales, when stable
+// mode is left and before g grows (see 'reward.h').  While closes are
+// deferred (LRB's interval), the literals assigned since the step's
+// backtrack wait for its bump round, which records them after it, or for
+// the next record after its end.
 
 static inline void kissat_record_intervals (kissat *solver) {
   intervals *const intervals = &solver->policy.intervals;
@@ -380,8 +438,10 @@ static inline void kissat_record_intervals (kissat *solver) {
   double *const opened = intervals->opened;
   uint64_t *const start = intervals->start;
   uint64_t *const bumps = intervals->bumps;
+  double *const multiplier = intervals->multiplier;
   const double inc = solver->scinc;
   const uint64_t round = solver->estimator.rounds;
+  const double g = solver->policy.reward.g;
   while (counted < size) {
     const unsigned lit = trail[counted++];
     const unsigned idx = IDX (lit);
@@ -389,14 +449,20 @@ static inline void kissat_record_intervals (kissat *solver) {
       continue;
     const unsigned s = state[idx];
     assert (!(s & INTERVALS_DEFERRED));
-    state[idx] = (s & INTERVALS_MARKED) | INTERVALS_OPEN |
-                 kissat_assignment_class (solver, idx, s);
+    const unsigned c = kissat_assignment_class (solver, idx, s);
+    state[idx] = (s & INTERVALS_MARKED) | INTERVALS_OPEN | c;
     if (opened)
       opened[idx] = inc;
     if (start) {
       start[idx] = round;
       bumps[idx] = 0;
     }
+    if (multiplier)
+      multiplier[idx] = g;
+#ifndef NDEBUG
+    if (solver->policy.reward.started)
+      kissat_check_reward_record (solver, idx, c);
+#endif
   }
   intervals->counted = size;
 }
@@ -461,6 +527,10 @@ static inline void kissat_policy_asserted (kissat *solver, unsigned lit) {
   uint8_t *const state = intervals->state + idx;
   assert (!(*state & (INTERVALS_OPEN | INTERVALS_MARKED)));
   *state |= INTERVALS_MARKED;
+#ifndef NDEBUG
+  if (solver->policy.reward.started)
+    kissat_check_reward_asserted (solver, idx); // the reward's check (d)
+#endif
 }
 
 // The interval a bump of the active variable 'idx' in the current round
@@ -602,6 +672,10 @@ static inline void kissat_policy_unassign (kissat *solver, unsigned idx) {
 #ifdef FEEDBACK
   kissat_feedback_unassign (solver, idx);
 #endif
+#ifndef NDEBUG
+  if (solver->policy.reward.locality)
+    solver->policy.reward.check.dirty = true; // the eager candidates
+#endif
   kissat_intervals_unassign (solver, idx);
   policy *const policy = &solver->policy;
   const tree *const tree = &policy->tree;
@@ -704,6 +778,10 @@ static inline void kissat_policy_begin_analysis (kissat *solver) {
   assert (!intervals->deferring);
   assert (EMPTY_STACK (intervals->deferred));
   intervals->analyzing = true;
+#ifndef NDEBUG
+  if (solver->policy.reward.started && !solver->policy.reward.lrb)
+    kissat_check_reward_step (solver); // the reward's checks (c) and (d)
+#endif
 #ifdef SHADOW
   keys *const keys = &solver->policy.keys;
   if (!keys->intervals)
@@ -718,9 +796,10 @@ static inline void kissat_policy_begin_analysis (kissat *solver) {
 }
 
 // The step ends, after its bump round if it had one.  Intervals still
-// deferred (no bump round) close without a round.  Assertion builds drop
-// the boundary of LRB's check if the step recorded no participants (see
-// 'lrb.h').
+// deferred (no bump round) close without a round, and then under the
+// reward's locality a step that bumped or recorded participants decays
+// (see 'reward.h').  Assertion builds drop the boundary of LRB's check if
+// the step recorded no participants (see 'lrb.h').
 
 static inline void kissat_policy_end_analysis (kissat *solver) {
 #ifdef FEEDBACK
@@ -734,6 +813,8 @@ static inline void kissat_policy_end_analysis (kissat *solver) {
     return;
   if (intervals->deferring)
     kissat_finish_deferred_intervals (solver);
+  if (solver->policy.reward.decay)
+    kissat_decay_locality (solver); // after the closes (see 'reward.h')
   intervals->analyzing = false;
 #ifdef SHADOW
   CLEAR_STACK (solver->policy.keys.observed);

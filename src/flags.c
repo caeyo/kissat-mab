@@ -16,7 +16,7 @@ static inline void activate_literal (kissat *solver, unsigned lit) {
   INC (variables_activated);
   kissat_enqueue (solver, idx);
   const double score = kissat_initial_score (solver); // see 'policy.h'
-  kissat_update_score (solver, idx, score);
+  kissat_update_true_score (solver, idx, score);     // see 'reward.h'
   if (solver->stable) {
     const unsigned lit = LIT (idx);
     if (!VALUE (lit))

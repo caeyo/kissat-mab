@@ -32,6 +32,8 @@ void kissat_print_estimator_statistics (kissat *solver) {
     kissat_message (solver, "estimator-chb-alpha %.17g",
                     kissat_chb_alpha (estimator->chb.conflicts));
   }
+  if (solver->policy.reward.started)
+    kissat_print_reward_statistics (solver); // Phase 4's reward
 #endif
 #else
   (void) solver;
@@ -519,6 +521,10 @@ unsigned kissat_policy_pick (kissat *solver) {
 #ifdef SHADOW
   shadow_pick (solver, res, uniform);
 #endif
+#ifndef NDEBUG
+  if (policy->reward.locality)
+    kissat_check_reward_pick (solver, res); // the eager form's pick
+#endif
 #ifdef FEEDBACK
   kissat_feedback_pick (solver, res, uniform); // M2's pick, M1's event
 #endif
@@ -545,7 +551,9 @@ unsigned kissat_policy_peek (kissat *solver) {
 // stable mode was left may belong to unassigned variables now.  For P1, TS
 // and UCB entering stable mode is a draw point, which rebuilds the tree.
 // The variables assigned now open their assignment intervals at the next
-// record (see 'intervals.h').
+// record (see 'intervals.h'), and in assertion builds the eager form of
+// the reward's locality selects its candidates again before the next pick
+// (see 'reward.h').
 
 void kissat_update_scores (kissat *solver) {
   assert (solver->stable);
@@ -564,6 +572,9 @@ void kissat_update_scores (kissat *solver) {
       added = true;
     }
   policy->intervals.counted = 0;
+#ifndef NDEBUG
+  policy->reward.check.dirty = true;
+#endif
   if (policy->keys.kind)
     kissat_draw_keys (solver);
   else if (added || kissat_chb (solver))
@@ -582,7 +593,7 @@ void kissat_update_scores (kissat *solver) {
 }
 
 // Frees the tree, the indicator tree, the arrays of P1, TS and UCB, those
-// of the assignment intervals and LRB's.
+// of the assignment intervals, LRB's and the reward's.
 
 void kissat_release_policy (kissat *solver) {
   kissat_release_tree (solver, &solver->policy.tree);
@@ -590,6 +601,7 @@ void kissat_release_policy (kissat *solver) {
   kissat_release_keys (solver);
   kissat_release_intervals (solver);
   kissat_release_lrb (solver);
+  kissat_release_reward (solver);
 #ifdef FEEDBACK
   kissat_release_feedback (solver);
 #endif
@@ -781,8 +793,9 @@ static void start_mixing (kissat *solver, unsigned gammappm) {
 // at this point may already hold variables ('kissat_update_scores' with
 // '--stable=2').  P1, TS and UCB, if selected, start with a draw point if
 // the search starts in stable mode (see 'keys.h'), and UCB on VSIDS scores,
-// feedback builds and LRB (see 'lrb.h') start the assignment intervals
-// (see 'intervals.h').  The clock of the decision metrics starts here.
+// feedback builds, LRB (see 'lrb.h') and the reward's options (see
+// 'reward.h') start the assignment intervals (see 'intervals.h').  The
+// clock of the decision metrics starts here.
 
 void kissat_start_policy (kissat *solver) {
   policy *const policy = &solver->policy;
@@ -800,6 +813,7 @@ void kissat_start_policy (kissat *solver) {
 #ifdef FEEDBACK
   kissat_start_feedback (solver);
 #endif
+  kissat_start_reward (solver);
   kissat_start_intervals (solver);
   const unsigned gammappm = GET_OPTION (gammappm);
   if (gammappm && !policy->uniform.enabled)

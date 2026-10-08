@@ -62,6 +62,17 @@
 // 'feedback.h'): every close tells them what it did
 // ('kissat_feedback_lrb_close').
 //
+// Phase 4's reward on this estimator (see 'reward.h'): with the channel
+// weighting ('wimp') the update at the close of an interval of class c
+// takes the step alpha w_c / max (1, w_imp), w_c = 1 for a decided
+// interval and w_imp for an asserted or a propagated one; with locality
+// ('locality') every unassigned variable's Q decays by lambda at the end of
+// every step that records participants, lazily: the stored value is Q
+// times the multiplier g, or for an assigned variable times g_a, its g at
+// its interval's start, so the update at a close uses the stored value
+// over g_a and stores the new Q times g, and a close without an update
+// moves the stored value from g_a to g all the same.
+//
 // Assertion builds check every close against a shadow log of their own:
 // per variable the participations and reason-side participations ever
 // counted, by a pass of their own over each step's analyzed set, split at
@@ -70,6 +81,10 @@
 // walk.  At the close the interval, both counts and the reward recomputed
 // from the log must equal those paid, the reward bitwise, and a close
 // inside an analysis step must be a deferred one, at the step's end.
+// Under the reward's channel weighting the close's class must be decided
+// exactly if the variable's reason was a decision at the walk, and its
+// step the one that gives, bitwise; under locality the check's eager Q
+// takes the update from the log's reward (see 'reward.h').
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -106,6 +121,7 @@ struct lrb {
     uint64_t *reasons;           // and reason-side participations ever
     uint64_t *participations_at; // the log at the interval's start
     uint64_t *reasons_at;
+    bool *decided;      // a decision at the walk (the reward's weighting)
     uint64_t logged[2]; // participations and reason-side ones logged
     uint64_t closes;    // closes checked
   } check;
@@ -135,11 +151,21 @@ void kissat_lrb_assign (struct kissat *, unsigned played, unsigned size,
 
 void kissat_lrb_analyzed (struct kissat *);
 
-// The assignment interval of 'idx' closes, as 'how' says (see
-// 'intervals.h'): LRB's reward, if the walk opened it.
+// The assignment interval of 'idx', of class 'c', closes, as 'how' says
+// (see 'intervals.h'): LRB's reward, if the walk opened it.
 
-void kissat_close_lrb_interval (struct kissat *, unsigned idx,
+void kissat_close_lrb_interval (struct kissat *, unsigned idx, unsigned c,
                                 unsigned how);
+
+// The step of the update at the close of an interval of class 'c' under
+// the reward's channel weighting (see 'reward.h'): alpha w_c / max (1,
+// w_imp), exactly alpha at w_imp = 1.
+
+static inline double kissat_lrb_weighted_step (double alpha, bool decided,
+                                               double wimp) {
+  const double w = decided ? 1 : wimp;
+  return alpha * w / (wimp > 1 ? wimp : 1);
+}
 
 void kissat_print_lrb_statistics (struct kissat *);
 
@@ -165,6 +191,7 @@ static inline void kissat_move_lrb (lrb *lrb, unsigned from, unsigned to) {
   lrb->check.reasons[to] = lrb->check.reasons[from];
   lrb->check.participations_at[to] = lrb->check.participations_at[from];
   lrb->check.reasons_at[to] = lrb->check.reasons_at[from];
+  lrb->check.decided[to] = lrb->check.decided[from];
 #endif
 }
 
@@ -177,6 +204,7 @@ static inline void kissat_clear_lrb (lrb *lrb, unsigned idx) {
   lrb->check.start[idx] = LRB_CLOSED;
   lrb->check.participations[idx] = lrb->check.reasons[idx] = 0;
   lrb->check.participations_at[idx] = lrb->check.reasons_at[idx] = 0;
+  lrb->check.decided[idx] = false;
 #endif
 }
 

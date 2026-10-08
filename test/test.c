@@ -459,6 +459,7 @@ int main (int argc, char **argv) {
   SCHEDULE (bump);
   SCHEDULE (chb);
   SCHEDULE (lrb);
+  SCHEDULE (reward);
   SCHEDULE (options);
   SCHEDULE (config);
   SCHEDULE (init);

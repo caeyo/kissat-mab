@@ -3,26 +3,28 @@
 
 // The assignment intervals of the variables in stable mode (tree builds):
 // one bookkeeping shared by UCB's observation counts on VSIDS scores (see
-// 'keys.h'), the feedback build's measurements (see 'feedback.h') and LRB's
-// reward on CHB scores (see 'lrb.h'), and later by Phase 4's reward on
-// VSIDS scores (research plan, Phase 4, Specification, part 2, The
-// bookkeeping).  It is started at the start of the search under UCB on
-// VSIDS scores, in feedback builds and under LRB.  Otherwise it is not
-// started and every hook below returns at once, so that Argmax, Sample,
-// mixing, P1, TS and UCB on CHB scores run the code paths they ran without
-// it.
+// 'keys.h'), the feedback build's measurements (see 'feedback.h'), LRB's
+// reward on CHB scores (see 'lrb.h') and Phase 4's reward, on VSIDS scores
+// and on LRB's estimator (see 'reward.h'; research plan, Phase 4,
+// Specification, part 2, The bookkeeping).  It is started at the start of
+// the search under UCB on VSIDS scores, in feedback builds, under LRB and
+// when a reward option is off its identity.  Otherwise it is not started
+// and every hook below returns at once, so that Argmax, Sample, mixing, P1,
+// TS and UCB on CHB scores run the code paths they ran without it.
 //
 // An interval of a variable runs from its assignment to its unassignment
 // in stable mode.  Assignment needs no hook: at the start of every bump
 // round, before every stable-mode backtrack, before a rescale of the scores
 // and when stable mode is left, the active literals assigned since the last
 // record ('counted', a trail position) open their intervals, with the
-// current score increment ('opened') and bump round ('start') on the VSIDS
-// line, which do not change between records.  Shrinking the trail moves
-// 'counted' down with it; compaction, which renames the trail's literals in
-// place and moves the variables' entries with them, leaves it.  Entering
-// stable mode sets it to zero, so that the next record opens an interval
-// for every variable assigned then.
+// current score increment ('opened', on the VSIDS line for UCB and the
+// feedback build) and bump round ('start', in feedback builds and under the
+// interval reward), which do not change between records, and under the
+// reward's locality its multiplier g ('multiplier').  Shrinking the trail
+// moves 'counted' down with it; compaction, which renames the trail's
+// literals in place and moves the variables' entries with them, leaves it.
+// Entering stable mode sets it to zero, so that the next record opens an
+// interval for every variable assigned then.
 //
 // Classes.  An interval is 'decided' if the variable's reason is
 // 'DECISION_REASON', 'asserted' if conflict analysis assigned it at the end
@@ -57,16 +59,20 @@
 // stage 2's count, which only UCB without the feedback build counts.  At a
 // close UCB adds the increments of the interval's bump rounds to its count
 // ('kissat_close_keys_interval'), the feedback build adds the interval to
-// its measurements ('kissat_close_feedback_interval'), and LRB pays its
+// its measurements ('kissat_close_feedback_interval'), LRB pays its
 // reward for the interval of its own that its walk opened, if it opened
-// one ('kissat_close_lrb_interval').
+// one ('kissat_close_lrb_interval'), and the reward on VSIDS scores pays
+// the interval reward and moves the stored value to the current g
+// ('kissat_close_reward_interval').
 //
-// Bumps (feedback builds).  A bump of a variable falls in the interval a
-// backtrack of the current step ended, if there is one, else in the open
-// interval of the assigned variable ('kissat_interval_bumped').  The
-// interval counts its rounds with a bump ('bumps', b), and its rounds k are
-// the bump round counter at the close minus 'start'.  Every bump in a run
-// falls in an interval; only the unit tests bump outside analysis steps.
+// Bumps (feedback builds and the reward).  A bump of a variable falls in
+// the interval a backtrack of the current step ended, if there is one,
+// else in the open interval of the assigned variable
+// ('kissat_interval_bumped').  The interval counts its rounds with a bump
+// ('bumps', b), and its rounds k are the bump round counter at the close
+// minus 'start', in feedback builds and under the interval reward.  Every
+// bump in a run falls in an interval; only the unit tests bump outside
+// analysis steps.
 
 #include "stack.h"
 
@@ -110,9 +116,11 @@ typedef struct intervals intervals;
 struct intervals {
   bool started;       // the arrays exist
   bool vsids;         // VSIDS line: increments and rounds at assignment
+  bool increments;    // ... the increments, for UCB and feedback builds
   bool ucb;           // UCB on VSIDS scores counts the intervals
   bool lrb;           // LRB's reward on CHB scores pays at the closes
-  bool rounds;        // feedback builds, VSIDS line: k and b
+  bool reward;        // the reward's closes: locality, interval reward
+  bool rounds;        // feedback builds, interval reward: k and b
   bool interval;      // LRB's interval: a step's backtracks defer closes
   bool analyzing;     // ... inside a step of conflict analysis
   bool deferring;     // ... a backtrack of the step deferred closes
@@ -120,17 +128,18 @@ struct intervals {
   unsigned counted;   // trail recorded up to here
   unsigneds deferred; // variables whose closes are deferred
   uint8_t *state;     // per variable, see above
-  double *opened;     // VSIDS line: score increment at the interval's start
+  double *opened;     // 'increments': score increment at the interval's start
   uint64_t *start;    // 'rounds': bump round at the interval's start
   uint64_t *bumps;    // 'rounds': its bump rounds with a bump of the variable
+  double *multiplier; // locality: its multiplier g at the interval's start
 };
 
 struct kissat;
 
-// At the start of the search, after LRB, the policy's keys and the
-// feedback build's measurements: whether the bookkeeping runs, and its
-// arrays.  In feedback builds UCB on VSIDS scores with stage 2's count is a
-// fatal error, since one record cannot give an asserted literal both
+// At the start of the search, after LRB, the policy's keys, the feedback
+// build's measurements and the reward: whether the bookkeeping runs, and
+// its arrays.  In feedback builds UCB on VSIDS scores with stage 2's count
+// is a fatal error, since one record cannot give an asserted literal both
 // counts' increments at assignment.
 
 void kissat_start_intervals (struct kissat *);
@@ -150,9 +159,11 @@ void kissat_finish_deferred_intervals (struct kissat *);
 
 void kissat_leave_stable_intervals (struct kissat *);
 
-// The scores are rescaled by 'factor' (VSIDS line): the literals assigned
-// since the last record are recorded first, at the old increment, then the
-// increments at assignment, UCB's counts and the feedback's sums follow.
+// The scores are rescaled (VSIDS line), the quantities in the units of the
+// increment by 'factor': the literals assigned since the last record are
+// recorded first, at the old increment, then the increments at assignment,
+// UCB's counts and the feedback's sums follow.  The reward's locality
+// gives its multipliers a rescale of their own (see 'reward.h').
 
 void kissat_rescale_intervals (struct kissat *, double factor);
 
@@ -163,12 +174,14 @@ static inline void kissat_move_intervals (intervals *intervals,
   if (!intervals->started)
     return;
   intervals->state[to] = intervals->state[from];
-  if (intervals->vsids)
+  if (intervals->increments)
     intervals->opened[to] = intervals->opened[from];
   if (intervals->rounds) {
     intervals->start[to] = intervals->start[from];
     intervals->bumps[to] = intervals->bumps[from];
   }
+  if (intervals->multiplier)
+    intervals->multiplier[to] = intervals->multiplier[from];
 }
 
 static inline void kissat_clear_intervals (intervals *intervals,
@@ -176,10 +189,12 @@ static inline void kissat_clear_intervals (intervals *intervals,
   if (!intervals->started)
     return;
   intervals->state[idx] = 0;
-  if (intervals->vsids)
+  if (intervals->increments)
     intervals->opened[idx] = 0;
   if (intervals->rounds)
     intervals->start[idx] = intervals->bumps[idx] = 0;
+  if (intervals->multiplier)
+    intervals->multiplier[idx] = 1;
 }
 
 #endif

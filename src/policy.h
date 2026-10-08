@@ -153,6 +153,11 @@
 // relative error of 'SHADOW_RECOUNT_TOLERANCE' of 1 + N, the quantity its
 // term depends on.
 //
+// Phase 4's reward (tree builds, see 'reward.h'): options that change the
+// estimator, on VSIDS scores and on LRB's, not the policy, which stays
+// Argmax: the channel weighting ('wimp'), locality ('locality',
+// 'localitydecay') and the interval reward ('intervalreward').
+//
 // Feedback builds ('./configure --feedback', '-DFEEDBACK'): a tree build
 // that also measures the feedback of the decision, Phase 3's M1, M2 and M3
 // (see 'feedback.h'), through hooks at the pick, the end of a search
@@ -220,6 +225,7 @@ struct estimator {
 #include "keys.h"
 #include "lrb.h"
 #include "random.h"
+#include "reward.h"
 #include "tree.h"
 
 #ifndef NDECISIONMETRICS
@@ -264,6 +270,7 @@ struct policy {
   intervals intervals; // UCB on VSIDS scores, feedback builds, LRB:
                        // assignment intervals (see 'intervals.h')
   lrb lrb;             // LRB's reward on CHB scores (see 'lrb.h')
+  reward reward;       // Phase 4's reward (see 'reward.h')
 #ifdef FEEDBACK
   feedback feedback; // feedback builds: M1, M2 and M3 (see 'feedback.h')
 #endif

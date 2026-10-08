@@ -75,7 +75,10 @@
   TREEOPT (gammappm, 0, 0, 1e6, "uniform mixing gamma in parts per million") \
   OPTION (ifthenelse, 1, 0, 1, "extract and eliminate if-then-else gates") \
   OPTION (incremental, 0, 0, 1, "enable incremental solving") \
+  TREEOPT (intervalreward, 0, 0, 1, "pay a bump as its interval's rate at the close") \
   OPTION (jumpreasons, 1, 0, 1, "jump binary reasons") \
+  TREEOPT (locality, 0, 0, 1, "decay unassigned variables' scores") \
+  TREEOPT (localitydecay, 950, 1, 1000, "locality's decay in per mille") \
   LOGOPT (log, 0, 0, 5, "logging level (1=on,2=more,3=check,4/5=mem)") \
   TREEOPT (lrb, 0, 0, 1, "LRB's reward on CHB's ERWA (with chb=1)") \
   OPTION (lucky, 1, 0, 1, "try some lucky assignments") \
@@ -184,7 +187,8 @@
   OPTION (vivifytier3, 1, 0, 100, "relative tier3 effort") \
   OPTION (walkeffort, 50, 0, 1e6, "effort in per mille") \
   OPTION (walkinitially, 0, 0, 1, "initial local search") \
-  OPTION (warmup, 1, 0, 1, "initialize phases by unit propagation")
+  OPTION (warmup, 1, 0, 1, "initialize phases by unit propagation") \
+  TREEOPT (wimp, 1000, 0, 1e6, "weight of implied observations in per mille")
 
 // clang-format on
 

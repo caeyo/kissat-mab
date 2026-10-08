@@ -29,21 +29,40 @@ static void sort_bump (kissat *solver) {
 }
 
 // The pseudo-activity is rescaled with the scores, as a bump made at time
-// zero would be.  The estimator records when it reaches zero.
+// zero would be.  The estimator records when it reaches zero.  Under the
+// reward's locality (tree builds, see 'reward.h') the stored scores are
+// the true ones times the multiplier g: the open intervals take the
+// current g first, the increment counts in stored units, g times its value,
+// and the increment and every quantity in its units are scaled by 'unit',
+// g times the scores' factor, before g is set to one.
 
 void kissat_rescale_scores (kissat *solver) {
   INC (rescaled);
+#ifndef HEAPARGMAX
+  const double g = kissat_begin_locality_rescale (solver); // 1 without
+#endif
   const double max_score = kissat_max_score (solver);
   kissat_phase (solver, "rescale", GET (rescaled),
                 "maximum score %g increment %g", max_score, solver->scinc);
+#ifndef HEAPARGMAX
+  const double rescale = MAX (max_score, solver->scinc * g);
+#else
   const double rescale = MAX (max_score, solver->scinc);
+#endif
   assert (rescale > 0);
   const double factor = 1.0 / rescale;
+#ifndef HEAPARGMAX
+  const double unit = factor * g;
+  kissat_scale_scores (solver, factor, unit);
+  kissat_end_locality_rescale (solver, unit);
+#else
+  const double unit = factor;
   kissat_scale_scores (solver, factor);
-  solver->scinc *= factor;
+#endif
+  solver->scinc *= unit;
   estimator *const estimator = &solver->estimator;
   const double old_pseudo = estimator->pseudo;
-  const double new_pseudo = old_pseudo * factor;
+  const double new_pseudo = old_pseudo * unit;
   estimator->pseudo = new_pseudo;
   estimator->rescales++;
   if (old_pseudo > 0 && !(new_pseudo > 0)) {
@@ -54,7 +73,7 @@ void kissat_rescale_scores (kissat *solver) {
                   estimator->rounds);
   }
   kissat_phase (solver, "rescale", GET (rescaled),
-                "rescaled by factor %g (pseudo-activity %g)", factor,
+                "rescaled by factor %g (pseudo-activity %g)", unit,
                 new_pseudo);
 }
 
@@ -76,6 +95,10 @@ void kissat_bump_score_increment (kissat *solver) {
 #ifndef HEAPARGMAX
 #ifdef FEEDBACK
   kissat_feedback_round_end (solver); // the brute force's count
+#endif
+#ifndef NDEBUG
+  if (solver->policy.reward.interval)
+    kissat_check_reward_round (solver); // the reward's brute force
 #endif
   if (solver->policy.intervals.deferring) {
     kissat_finish_deferred_intervals (solver);
@@ -106,7 +129,9 @@ void kissat_bump_variable (kissat *solver, unsigned idx) {
 // a score or by the increment, sees the number of the round.  The
 // assignment intervals of the literals assigned since their last record
 // open before the round, so that it counts in them, and feedback builds
-// count every bump in the interval it falls in (see 'intervals.h').
+// count every bump in the interval it falls in (see 'intervals.h').  Under
+// Phase 4's reward (tree builds, see 'reward.h') the bumps are the
+// reward's, by the class of the interval each falls in.
 
 static void bump_analyzed_variable_scores (kissat *solver) {
 #ifndef HEAPARGMAX
@@ -118,13 +143,18 @@ static void bump_analyzed_variable_scores (kissat *solver) {
 #endif
   flags *flags = solver->flags;
 
-  for (all_stack (unsigned, idx, solver->analyzed))
-    if (flags[idx].active) {
-#ifdef FEEDBACK
-      kissat_feedback_bump (solver, idx); // before the score's bump
+#ifndef HEAPARGMAX
+  if (solver->policy.reward.started)
+    kissat_reward_bumps (solver);
+  else
 #endif
-      bump_analyzed_variable_score (solver, idx);
-    }
+    for (all_stack (unsigned, idx, solver->analyzed))
+      if (flags[idx].active) {
+#ifdef FEEDBACK
+        kissat_feedback_bump (solver, idx); // before the score's bump
+#endif
+        bump_analyzed_variable_score (solver, idx);
+      }
 
   kissat_bump_score_increment (solver);
 }

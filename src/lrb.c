@@ -53,6 +53,7 @@ void kissat_resize_lrb (kissat *solver, unsigned new_size) {
   RESIZE (lrb->check.reasons);
   RESIZE (lrb->check.participations_at);
   RESIZE (lrb->check.reasons_at);
+  RESIZE (lrb->check.decided);
   close_all (lrb->check.start, old_size, new_size);
 #endif
   lrb->size = new_size;
@@ -77,6 +78,7 @@ void kissat_release_lrb (kissat *solver) {
   RELEASE (lrb->check.reasons);
   RELEASE (lrb->check.participations_at);
   RELEASE (lrb->check.reasons_at);
+  RELEASE (lrb->check.decided);
 #endif
   lrb->size = 0;
 }
@@ -124,6 +126,8 @@ static void check_open (kissat *solver, unsigned idx, uint64_t conflicts) {
   lrb->check.start[idx] = conflicts;
   lrb->check.participations_at[idx] = lrb->check.participations[idx];
   lrb->check.reasons_at[idx] = lrb->check.reasons[idx];
+  lrb->check.decided[idx] =
+      solver->assigned[idx].reason == DECISION_REASON;
 }
 
 void kissat_check_lrb_boundary (kissat *solver) {
@@ -158,10 +162,12 @@ static void check_analyzed (kissat *solver) {
 // the participations of either kind since the walk, and the reward.  A
 // close inside an analysis step is a deferred one, at the step's end,
 // after its record of participants, and every other close is outside.
+// Returns the log's reward, and its class at the walk in 'decided'.
 
-static void check_close (kissat *solver, unsigned idx, unsigned how,
-                         uint64_t interval, unsigned participated,
-                         unsigned reasoned, double reward) {
+static double check_close (kissat *solver, unsigned idx, unsigned how,
+                           uint64_t interval, unsigned participated,
+                           unsigned reasoned, double reward,
+                           bool *decided) {
   lrb *const lrb = &solver->policy.lrb;
   const bool analyzing = solver->policy.intervals.analyzing;
   if (analyzing != (how == INTERVALS_CLOSE_DEFERRED))
@@ -192,6 +198,28 @@ static void check_close (kissat *solver, unsigned idx, unsigned how,
                   idx, interval, participated, reasoned, reward, expected,
                   p, q, r, conflicts);
   lrb->check.closes++;
+  *decided = lrb->check.decided[idx];
+  return r;
+}
+
+// Under the reward's channel weighting (see 'reward.h') the class of a
+// paid close against the reason at the walk, and its step against the
+// weighting's, bitwise.
+
+static void check_step (kissat *solver, unsigned idx, unsigned c,
+                        bool decided, double alpha, double step) {
+  const reward *const reward = &solver->policy.reward;
+  if (decided != (c == INTERVALS_DECIDED))
+    kissat_fatal ("LRB check: interval of variable %u closes in class %u "
+                  "but its reason at the walk was %sa decision",
+                  idx, c, decided ? "" : "not ");
+  const double expected =
+      kissat_lrb_weighted_step (alpha, decided, reward->wimp);
+  if (!kissat_same_double (expected, step))
+    kissat_fatal ("LRB check: interval of variable %u closes with step "
+                  "%.17g, where its class gives %.17g",
+                  idx, step, expected);
+  solver->policy.reward.check.updates++;
 }
 
 #endif
@@ -256,14 +284,43 @@ void kissat_lrb_analyzed (kissat *solver) {
   }
   lrb->count.participations += counted;
   lrb->count.reasons += reasons;
+  reward *const reward = &solver->policy.reward;
+  if (reward->locality)
+    reward->decay = true; // the step decays (see 'reward.h')
 #ifndef NDEBUG
   check_analyzed (solver);
 #endif
 }
 
-void kissat_close_lrb_interval (kissat *solver, unsigned idx,
+// The reward's locality (see 'reward.h'): Q of an interval closing, from
+// the stored value, which its start's multiplier g_a scales, and the stored
+// value of 'q' now, which g scales.  Without locality both are Q.
+
+static double true_q (kissat *solver, unsigned idx) {
+  const double score = solver->score[idx];
+  if (!solver->policy.reward.locality)
+    return score;
+  return score / solver->policy.intervals.multiplier[idx];
+}
+
+static void store_q (kissat *solver, unsigned idx, double q) {
+  const reward *const reward = &solver->policy.reward;
+  const double score = reward->locality ? q * reward->g : q;
+  if (VALUE (LIT (idx)))
+    kissat_update_assigned_score (solver, idx, score);
+  else
+    kissat_update_score (solver, idx, score);
+}
+
+// Under the reward's locality a close that pays nothing still moves the
+// stored value from g_a to g (see 'reward.h'), and the update of a paid
+// one uses Q over g_a and stores the new Q times g; its channel weighting
+// scales the step by the interval's class 'c'.
+
+void kissat_close_lrb_interval (kissat *solver, unsigned idx, unsigned c,
                                 unsigned how) {
   lrb *const lrb = &solver->policy.lrb;
+  reward *const reward = &solver->policy.reward;
   assert (lrb->started);
   assert (how < sizeof lrb->count.closed / sizeof *lrb->count.closed);
   uint64_t *const p = lrb->start + idx;
@@ -276,6 +333,8 @@ void kissat_close_lrb_interval (kissat *solver, unsigned idx,
                     idx, lrb->check.start[idx]);
 #endif
     lrb->count.ignored++;
+    if (reward->locality)
+      store_q (solver, idx, true_q (solver, idx));
 #ifdef FEEDBACK
     kissat_feedback_lrb_close (solver, FEEDBACK_LRB_IGNORED, 0, 0);
 #endif
@@ -289,32 +348,55 @@ void kissat_close_lrb_interval (kissat *solver, unsigned idx,
   const unsigned participated = lrb->participated[idx];
   const unsigned reasoned = lrb->reasoned[idx];
   const uint64_t participations = (uint64_t) participated + reasoned;
-  const double reward =
+  const double r =
       interval ? (double) participations / (double) interval : 0;
 #ifndef NDEBUG
-  check_close (solver, idx, how, interval, participated, reasoned, reward);
+  bool decided;
+  const double logged = check_close (solver, idx, how, interval,
+                                     participated, reasoned, r, &decided);
 #endif
   if (!interval) {
     LOG ("LRB closes the interval of %s without a conflict", LOGVAR (idx));
     lrb->count.skipped++;
+    if (reward->locality)
+      store_q (solver, idx, true_q (solver, idx));
 #ifdef FEEDBACK
     kissat_feedback_lrb_close (solver, FEEDBACK_LRB_SKIPPED, 0, 0);
 #endif
     return;
   }
-  const double alpha = kissat_chb_alpha (conflicts);
-  const double old_q = solver->score[idx];
-  const double new_q = (1 - alpha) * old_q + alpha * reward;
+  double alpha = kissat_chb_alpha (conflicts);
+  if (reward->started) {
+#ifndef NDEBUG
+    const double unweighted = alpha;
+#endif
+    if (reward->weighted)
+      alpha = kissat_lrb_weighted_step (alpha, c == INTERVALS_DECIDED,
+                                        reward->wimp);
+#ifndef NDEBUG
+    if (reward->weighted)
+      check_step (solver, idx, c, decided, unweighted, alpha);
+    if (reward->locality)
+      kissat_check_reward_lrb (
+          solver, idx,
+          reward->weighted ? kissat_lrb_weighted_step (unweighted, decided,
+                                                       reward->wimp)
+                           : unweighted,
+          logged);
+#endif
+    assert (c < sizeof reward->count.updates /
+                    sizeof *reward->count.updates);
+    reward->count.updates[c]++;
+  }
+  const double old_q = true_q (solver, idx);
+  const double new_q = (1 - alpha) * old_q + alpha * r;
   LOG ("LRB pays %s reward %g interval %" PRIu64 " Q %g -> %g",
-       LOGVAR (idx), reward, interval, old_q, new_q);
+       LOGVAR (idx), r, interval, old_q, new_q);
   lrb->count.updates++;
-  lrb->count.above += reward > 1;
-  if (VALUE (LIT (idx)))
-    kissat_update_assigned_score (solver, idx, new_q);
-  else
-    kissat_update_score (solver, idx, new_q);
+  lrb->count.above += r > 1;
+  store_q (solver, idx, new_q);
 #ifdef FEEDBACK
-  kissat_feedback_lrb_close (solver, FEEDBACK_LRB_PAID, reward, alpha);
+  kissat_feedback_lrb_close (solver, FEEDBACK_LRB_PAID, r, alpha);
 #endif
 }
 

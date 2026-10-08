@@ -185,7 +185,7 @@ static void reorder_stable (kissat *solver) {
     unsigned idx = POP_STACK (sorted);
     assert (ACTIVE (idx));
     const double old_score = kissat_get_score (solver, idx);
-    const double weight = weights[idx];
+    const double weight = kissat_true_weight (solver, idx, weights[idx]);
     const double new_score = old_score + weight;
     LOG ("updating score of %s to %g = %g (old score) + %g (weight)",
          LOGVAR (idx), new_score, old_score, weight);

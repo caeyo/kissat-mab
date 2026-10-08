@@ -34,11 +34,16 @@ void kissat_resize_intervals (kissat *solver, unsigned new_size) {
   if (old_size == new_size)
     return;
   RESIZE (intervals->state);
-  if (intervals->vsids)
+  if (intervals->increments)
     RESIZE (intervals->opened);
   if (intervals->rounds) {
     RESIZE (intervals->start);
     RESIZE (intervals->bumps);
+  }
+  if (solver->policy.reward.locality) {
+    RESIZE (intervals->multiplier);
+    for (unsigned idx = old_size; idx < new_size; idx++)
+      intervals->multiplier[idx] = 1;
   }
   intervals->size = new_size;
 }
@@ -57,15 +62,21 @@ void kissat_release_intervals (kissat *solver) {
   RELEASE (intervals->opened);
   RELEASE (intervals->start);
   RELEASE (intervals->bumps);
+  RELEASE (intervals->multiplier);
   RELEASE_STACK (intervals->deferred);
   intervals->size = 0;
 }
 
 // UCB on VSIDS scores counts the intervals ('keys.h'), with LRB's interval
 // unless 'ucbinterval=0', feedback builds measure them, always with LRB's
-// interval ('feedback.h'), and LRB pays its reward at their closes, on CHB
-// scores with LRB's interval ('lrb.h').  A later search keeps the
-// bookkeeping.
+// interval ('feedback.h'), LRB pays its reward at their closes, on CHB
+// scores with LRB's interval ('lrb.h'), and the reward, with LRB's
+// interval, weights the bumps by their classes, pays the interval reward
+// with their k and b, and moves its lazy values with the multiplier
+// recorded at their start ('reward.h').  The reward runs without UCB and
+// the feedback build, so without the increments at assignment, and its
+// closes do something only under locality or the interval reward.  A later
+// search keeps the bookkeeping.
 
 void kissat_start_intervals (kissat *solver) {
   intervals *const intervals = &solver->policy.intervals;
@@ -84,13 +95,17 @@ void kissat_start_intervals (kissat *solver) {
 #else
   const bool feedback = false;
 #endif
-  if (!ucb && !feedback && !lrb)
+  const reward *const reward = &solver->policy.reward;
+  if (!ucb && !feedback && !lrb && !reward->started)
     return;
   intervals->started = true;
   intervals->vsids = !kissat_chb (solver);
+  intervals->increments = intervals->vsids && (ucb || feedback);
   intervals->ucb = ucb;
   intervals->lrb = lrb;
-  intervals->rounds = feedback && intervals->vsids;
+  intervals->reward =
+      intervals->vsids && (reward->locality || reward->interval);
+  intervals->rounds = (feedback || reward->interval) && intervals->vsids;
   intervals->interval = !ucb || interval;
   intervals->counted = 0;
   kissat_resize_intervals (solver, solver->size);
@@ -100,8 +115,8 @@ void kissat_start_intervals (kissat *solver) {
                                            : "");
 }
 
-// The users' closes: UCB's count, LRB's reward, and the feedback's
-// measurements.
+// The users' closes: UCB's count, LRB's reward, the reward on VSIDS
+// scores, and the feedback's measurements.
 
 void kissat_close_interval (kissat *solver, unsigned idx, unsigned c,
                             unsigned how) {
@@ -110,11 +125,11 @@ void kissat_close_interval (kissat *solver, unsigned idx, unsigned c,
   if (intervals->ucb)
     kissat_close_keys_interval (solver, idx, how);
   if (intervals->lrb)
-    kissat_close_lrb_interval (solver, idx, how);
+    kissat_close_lrb_interval (solver, idx, c, how);
+  if (intervals->reward)
+    kissat_close_reward_interval (solver, idx, c, how);
 #ifdef FEEDBACK
   kissat_close_feedback_interval (solver, idx, c);
-#else
-  (void) c;
 #endif
 }
 
@@ -169,7 +184,7 @@ void kissat_leave_stable_intervals (kissat *solver) {
 void kissat_rescale_intervals (kissat *solver, double factor) {
   intervals *const intervals = &solver->policy.intervals;
   assert (intervals->started);
-  if (!intervals->vsids)
+  if (!intervals->increments)
     return;
   kissat_record_intervals (solver);
   double *const opened = intervals->opened;
