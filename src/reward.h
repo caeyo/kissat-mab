@@ -74,12 +74,12 @@
 // Assertion builds check the reward.  Locality: an eager form beside the
 // lazy one, one value per variable in true units, decayed at every step;
 // at every pick the variable of largest eager value among the unassigned
-// ones, the smallest index among ties, must be the pick, or within
+// active ones, the smallest index among ties, must be the pick, or within
 // 'REWARD_TOLERANCE' of it (a tie, rounded apart, counted and the first
-// ones logged).  The eager pick is the first unassigned one of the
-// 'REWARD_CANDIDATES' largest eager values, selected by the pass that
-// decays them or, after any other change, by a pass of its own, and again
-// when every candidate is assigned.  Every 1000 picks every active
+// ones logged).  The eager pick is the first still active and unassigned
+// one of the 'REWARD_CANDIDATES' largest eager values, selected by the
+// pass that decays them or, after any other change, by a pass of its own,
+// and again when none is left.  Every 1000 picks every active
 // variable's stored value over g_a (its interval open or deferred) or g
 // must equal its eager value to 'REWARD_TOLERANCE' of its size plus
 // 'DBL_MIN', so that values decayed below the normal range, which keep few
