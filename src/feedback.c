@@ -46,7 +46,15 @@ void kissat_resize_feedback (kissat *solver, unsigned new_size) {
   RESIZE (fb->check.propagated, 1);
   RESIZE (fb->check.observed, 1);
 #endif
-  if (fb->chb) {
+  if (fb->lrb) {
+    RESIZE (fb->unassigned, 1);
+    RESIZE (fb->slot, 1);
+    RESIZE (fb->erwas, 1);
+#ifndef NDEBUG
+    RESIZE (fb->check.q1, 1);
+    RESIZE (fb->check.shadow, 1);
+#endif
+  } else if (fb->chb) {
     RESIZE (fb->reward, 1);
     for (unsigned c = 0; c < 2; c++) {
       RESIZE (fb->q[c], 1);
@@ -69,6 +77,9 @@ void kissat_resize_feedback (kissat *solver, unsigned new_size) {
     RESIZE (fb->check.bumped, 1);
     RESIZE (fb->check.marked, 1);
 #endif
+    RESIZE (fb->unassigned, 1);
+    RESIZE (fb->slot, 1);
+    RESIZE (fb->classes, 1);
   }
   fb->size = new_size;
 }
@@ -101,23 +112,33 @@ void kissat_release_feedback (kissat *solver) {
   RELEASE (fb->propagated, 1);
   RELEASE (fb->observed, 1);
   RELEASE (fb->reward, 1);
+  RELEASE (fb->unassigned, 1);
+  RELEASE (fb->slot, 1);
+  RELEASE (fb->classes, 1);
+  RELEASE (fb->erwas, 1);
 #ifndef NDEBUG
   RELEASE (fb->check.rounds, 1);
   RELEASE (fb->check.bumped, 1);
   RELEASE (fb->check.marked, 1);
   RELEASE (fb->check.propagated, 1);
   RELEASE (fb->check.observed, 1);
+  RELEASE (fb->check.q1, 1);
+  RELEASE (fb->check.shadow, 1);
   RELEASE_STACK (fb->check.listed);
   RELEASE_STACK (fb->check.staged);
   RELEASE_STACK (fb->check.levels);
 #endif
   RELEASE_STACK (fb->staged);
+  RELEASE_STACK (fb->records);
+  RELEASE_STACK (fb->free);
   fb->size = 0;
 }
 
-// At the start of the search: the line, the decay of the counts (the score
-// decay, as for UCB's counts, so that their increments are the scores'),
-// and the arrays.  A later search keeps them.
+static void start_factors (feedback *);
+
+// At the start of the search, after LRB: the line, the decay of the counts
+// (the score decay, as for UCB's counts, so that their increments are the
+// scores'), and the arrays.  A later search keeps them.
 
 void kissat_start_feedback (kissat *solver) {
   feedback *const fb = &solver->policy.feedback;
@@ -125,13 +146,18 @@ void kissat_start_feedback (kissat *solver) {
     return;
   fb->started = true;
   fb->chb = kissat_chb (solver);
+  fb->lrb = solver->policy.lrb.started;
+  assert (!fb->lrb || fb->chb);
   const double decay = GET_OPTION (decay) * 1e-3;
   fb->growth = 1.0 / (1.0 - decay);
   fb->increment = 1;
+  fb->log_lambda = log (FEEDBACK_LOCALITY);
+  start_factors (fb);
   kissat_resize_feedback (solver, solver->size);
-  kissat_very_verbose (solver, "measuring the decision's feedback on %s "
-                               "scores",
-                       fb->chb ? "CHB" : "VSIDS");
+  kissat_very_verbose (solver, "measuring the decision's feedback on %s",
+                       fb->lrb   ? "LRB's reward"
+                       : fb->chb ? "CHB scores"
+                                 : "VSIDS scores");
 }
 
 void kissat_move_feedback (kissat *solver, unsigned from, unsigned to) {
@@ -148,6 +174,16 @@ void kissat_move_feedback (kissat *solver, unsigned from, unsigned to) {
   fb->check.propagated[to] = fb->check.propagated[from];
   fb->check.observed[to] = fb->check.observed[from];
 #endif
+  if (fb->lrb) {
+    fb->unassigned[to] = fb->unassigned[from];
+    fb->slot[to] = fb->slot[from];
+    fb->erwas[to] = fb->erwas[from];
+#ifndef NDEBUG
+    fb->check.q1[to] = fb->check.q1[from];
+    fb->check.shadow[to] = fb->check.shadow[from];
+#endif
+    return;
+  }
   if (fb->chb) {
     fb->reward[to] = fb->reward[from];
     for (unsigned c = 0; c < 2; c++) {
@@ -174,7 +210,13 @@ void kissat_move_feedback (kissat *solver, unsigned from, unsigned to) {
   fb->check.bumped[to] = fb->check.bumped[from];
   fb->check.marked[to] = fb->check.marked[from];
 #endif
+  fb->unassigned[to] = fb->unassigned[from];
+  fb->slot[to] = fb->slot[from];
+  fb->classes[to] = fb->classes[from];
 }
+
+// The entries of a variable index beyond those compaction keeps.  A pending
+// pick's record stays: it moved with its variable.
 
 void kissat_clear_feedback (kissat *solver, unsigned idx) {
   feedback *const fb = &solver->policy.feedback;
@@ -190,6 +232,16 @@ void kissat_clear_feedback (kissat *solver, unsigned idx) {
   fb->check.propagated[idx] = 0;
   fb->check.observed[idx] = 0;
 #endif
+  if (fb->lrb) {
+    fb->unassigned[idx] = 0;
+    fb->slot[idx] = 0;
+    memset (fb->erwas + idx, 0, sizeof *fb->erwas);
+#ifndef NDEBUG
+    fb->check.q1[idx] = 0;
+    memset (fb->check.shadow + idx, 0, sizeof *fb->check.shadow);
+#endif
+    return;
+  }
   if (fb->chb) {
     fb->reward[idx] = 0;
     for (unsigned c = 0; c < 2; c++) {
@@ -213,6 +265,9 @@ void kissat_clear_feedback (kissat *solver, unsigned idx) {
   fb->check.bumped[idx] = 0;
   fb->check.marked[idx] = 0;
 #endif
+  fb->unassigned[idx] = 0;
+  fb->slot[idx] = 0;
+  memset (fb->classes + idx, 0, sizeof *fb->classes);
 }
 
 static inline unsigned class_of (kissat *solver, unsigned idx) {
@@ -225,6 +280,85 @@ static inline unsigned class_of (kissat *solver, unsigned idx) {
 
 static inline unsigned feedback_class (unsigned c) {
   return c == INTERVALS_DECIDED ? FEEDBACK_DEC : FEEDBACK_IMP;
+}
+
+// Phase 4's pre-check (see 'feedback.h').  The weights, as the arithmetic
+// takes them and, per mille, as the printed names and the checks give
+// them; every one is exact in binary.
+
+static const double two_class_w[FEEDBACK_WEIGHTS] = {0.25, 0.5, 2, 4};
+static const double grid_w[FEEDBACK_GRID_W] = {0.25, 0.5, 1, 2, 4};
+static const double grid_a[FEEDBACK_GRID_A] = {0, 0.5, 2, 4};
+
+static const unsigned two_class_permille[FEEDBACK_WEIGHTS] = {250, 500,
+                                                              2000, 4000};
+static const unsigned grid_w_permille[FEEDBACK_GRID_W] = {250, 500, 1000,
+                                                          2000, 4000};
+static const unsigned grid_a_permille[FEEDBACK_GRID_A] = {0, 500, 2000,
+                                                          4000};
+
+// LRB line: the factor of alpha in the step of an update of class 'c' (in
+// 'intervals.h') to Q_w, min (1, w) for an implied interval and min (1,
+// 1/w) for a decided one, and to Q_{w,a}, w_c / max (1, w, a) with w_dec =
+// 1, w_prop = w and w_ast = a.  Each is a power of two or zero, so that the
+// step is exact, and Q_{w,w} is Q_w's.
+
+static void start_factors (feedback *fb) {
+  for (unsigned c = 0; c < 3; c++) {
+    double *const factor = fb->factors[c];
+    for (unsigned i = 0; i < FEEDBACK_WEIGHTS; i++) {
+      const double w = two_class_w[i];
+      if (c == INTERVALS_DECIDED)
+        factor[i] = w > 1 ? 1 / w : 1;
+      else
+        factor[i] = w < 1 ? w : 1;
+    }
+    for (unsigned i = 0; i < FEEDBACK_GRID; i++) {
+      const double w = grid_w[i / FEEDBACK_GRID_A];
+      const double a = grid_a[i % FEEDBACK_GRID_A];
+      double largest = 1;
+      if (w > largest)
+        largest = w;
+      if (a > largest)
+        largest = a;
+      const double weight = c == INTERVALS_DECIDED   ? 1
+                            : c == INTERVALS_ASSERTED ? a
+                                                      : w;
+      factor[FEEDBACK_WEIGHTS + i] = weight / largest;
+    }
+  }
+}
+
+// The pending picks' records, one per pending pick on the VSIDS and LRB
+// lines, reused once their picks have closed.
+
+static feedback_record *new_record (kissat *solver, unsigned idx) {
+  feedback *const fb = &solver->policy.feedback;
+  assert (!fb->slot[idx]);
+  unsigned res;
+  if (EMPTY_STACK (fb->free)) {
+    res = SIZE_STACK (fb->records);
+    feedback_record record;
+    memset (&record, 0, sizeof record);
+    PUSH_STACK (fb->records, record);
+  } else
+    res = POP_STACK (fb->free);
+  fb->slot[idx] = res + 1;
+  return &PEEK_STACK (fb->records, res);
+}
+
+static feedback_record *record_of (feedback *fb, unsigned idx) {
+  const unsigned slot = fb->slot[idx];
+  assert (slot);
+  return &PEEK_STACK (fb->records, slot - 1);
+}
+
+static void free_record (kissat *solver, unsigned idx) {
+  feedback *const fb = &solver->policy.feedback;
+  if (!fb->slot || !fb->slot[idx])
+    return;
+  PUSH_STACK (fb->free, fb->slot[idx] - 1);
+  fb->slot[idx] = 0;
 }
 
 #ifndef NDEBUG
@@ -251,8 +385,9 @@ static void check_interval (kissat *solver, unsigned idx, uint64_t k,
 
 // VSIDS line: the bump of the active variable 'idx' in the current round,
 // before its score, in the interval it falls in, which counts it (see
-// 'kissat_interval_bumped').  A bump in no interval happens only in the
-// unit tests, which bump outside analysis steps.
+// 'kissat_interval_bumped'), by class and, if implied, by asserted or
+// propagated class too.  A bump in no interval happens only in the unit
+// tests, which bump outside analysis steps.
 
 void kissat_feedback_bump (kissat *solver, unsigned idx) {
   feedback *const fb = &solver->policy.feedback;
@@ -264,9 +399,18 @@ void kissat_feedback_bump (kissat *solver, unsigned idx) {
     fb->m1.unobserved++;
     return;
   }
-  const unsigned c = feedback_class (bumped & INTERVALS_CLASS);
-  fb->m1.bumps[!!(bumped & INTERVALS_ENDED)][c]++;
-  fb->r[c][idx] += solver->scinc;
+  const unsigned three = bumped & INTERVALS_CLASS;
+  const unsigned c = feedback_class (three);
+  const unsigned ended = !!(bumped & INTERVALS_ENDED);
+  const double inc = solver->scinc;
+  fb->m1.bumps[ended][c]++;
+  fb->r[c][idx] += inc;
+  if (three == INTERVALS_DECIDED)
+    return;
+  const unsigned j =
+      three == INTERVALS_ASSERTED ? FEEDBACK_AST : FEEDBACK_PROP;
+  fb->m1.bumps3[ended][j]++;
+  fb->classes[idx].r[j] += inc;
 }
 
 // Bins and sums.
@@ -365,6 +509,440 @@ static void add_payment (feedback_sums *sums, const double *p,
     const double error = reward - p[i];
     sums->interval[i] += error * error;
   }
+}
+
+// The pre-check's predictors 'v' of an event: each one that is defined
+// scores the event, an interval of 'k' rounds, 'b' of them with a bump
+// (VSIDS), or a reward (LRB), and counts it.
+
+static void add_extra (feedback_extra *sums, const double *v,
+                       unsigned count, uint64_t k, uint64_t b) {
+  assert (k), assert (b <= k);
+  const double rate = (double) b / k;
+  for (unsigned i = 0; i < count; i++) {
+    const double q = v[i];
+    if (isnan (q))
+      continue;
+    const double miss = 1 - q, error = rate - q;
+    sums->n[i]++;
+    sums->round[i] += b * miss * miss + (k - b) * q * q;
+    sums->interval[i] += error * error;
+  }
+}
+
+static void add_extra_payment (feedback_extra *sums, const double *v,
+                               unsigned count, double reward) {
+  for (unsigned i = 0; i < count; i++) {
+    const double q = v[i];
+    if (isnan (q))
+      continue;
+    const double error = reward - q;
+    sums->n[i]++;
+    sums->interval[i] += error * error;
+  }
+}
+
+// VSIDS line: the event, closed with k >= 1, joins the cells of the yield
+// predictors with its rate b / k.
+
+static void add_cells (feedback_cells *cells, unsigned bin_y,
+                       unsigned bin_p, double rate) {
+  assert (bin_y < FEEDBACK_YIELDS), assert (bin_p <= FEEDBACK_BINS);
+  cells->n_y[bin_y]++;
+  cells->y[bin_y] += rate;
+  if (bin_p == FEEDBACK_BINS)
+    return;
+  cells->n_p[bin_p]++;
+  cells->p[bin_p] += rate;
+  cells->n_yp[bin_y][bin_p]++;
+  cells->yp[bin_y][bin_p] += rate;
+}
+
+// VSIDS line: the pre-check's predictors of a pick of 'idx' (see
+// 'feedback.h'), from its sums and the cells of the yield predictors,
+// with p_1 and the bin of 'Y_v' that M1 and M3 freeze.  The three yield
+// predictors are defined together, where B_Yp is, with p_1 beside them.
+
+static void freeze_vsids (kissat *solver, unsigned idx,
+                          feedback_record *record, double p_1,
+                          unsigned bin_y) {
+  feedback *const fb = &solver->policy.feedback;
+  const feedback_classes *const c = fb->classes + idx;
+  const double n_dec = fb->n[FEEDBACK_DEC][idx];
+  const double n_imp = fb->n[FEEDBACK_IMP][idx];
+  const double r_dec = fb->r[FEEDBACK_DEC][idx];
+  const double r_imp = fb->r[FEEDBACK_IMP][idx];
+  const double n_ast = c->n[FEEDBACK_AST], n_prop = c->n[FEEDBACK_PROP];
+  const double r_ast = c->r[FEEDBACK_AST], r_prop = c->r[FEEDBACK_PROP];
+  double *const v = record->extra;
+  v[FEEDBACK_V_AST] = n_ast > 0 ? r_ast / n_ast : NAN;
+  v[FEEDBACK_V_PROP] = n_prop > 0 ? r_prop / n_prop : NAN;
+  for (unsigned i = 0; i < FEEDBACK_WEIGHTS; i++) {
+    const double w = two_class_w[i], n = n_dec + w * n_imp;
+    v[FEEDBACK_V_W + i] = n > 0 ? (r_dec + w * r_imp) / n : NAN;
+  }
+  for (unsigned i = 0; i < FEEDBACK_GRID; i++) {
+    const double w = grid_w[i / FEEDBACK_GRID_A];
+    const double a = grid_a[i % FEEDBACK_GRID_A];
+    const double n = n_dec + a * n_ast + w * n_prop;
+    v[FEEDBACK_V_GRID + i] =
+        n > 0 ? (r_dec + a * r_ast + w * r_prop) / n : NAN;
+  }
+  const double rate_dec = c->rates[FEEDBACK_DEC];
+  const double rate_imp = c->rates[FEEDBACK_IMP];
+  const double weight_dec = c->weights[FEEDBACK_DEC];
+  const double weight_imp = c->weights[FEEDBACK_IMP];
+  const double weights = weight_dec + weight_imp;
+  v[FEEDBACK_V_MEAN] = weight_dec > 0 ? rate_dec / weight_dec : NAN;
+  v[FEEDBACK_V_MEAN + 1] =
+      weights > 0 ? (rate_dec + rate_imp) / weights : NAN;
+  v[FEEDBACK_V_MEAN + 2] = weight_imp > 0 ? rate_imp / weight_imp : NAN;
+  const unsigned bin_p =
+      isnan (p_1) ? FEEDBACK_BINS : calibration_bin (p_1);
+  record->bin_y = bin_y;
+  record->bin_p = bin_p;
+  const feedback_cells *const cells = &fb->m1.cells;
+  double *const bins = v + FEEDBACK_V_BIN;
+  if (bin_p < FEEDBACK_BINS && cells->n_yp[bin_y][bin_p]) {
+    bins[0] = cells->y[bin_y] / cells->n_y[bin_y];
+    bins[1] = cells->p[bin_p] / cells->n_p[bin_p];
+    bins[2] = cells->yp[bin_y][bin_p] / cells->n_yp[bin_y][bin_p];
+    bins[3] = p_1;
+  } else
+    bins[0] = bins[1] = bins[2] = bins[3] = NAN;
+}
+
+// LRB line: M1's four and the pre-check's predictors of a pick of 'idx',
+// from its ERWAs, each defined once an update of a class with a positive
+// step has reached it.
+
+static void freeze_lrb (kissat *solver, unsigned idx,
+                        feedback_record *record) {
+  feedback *const fb = &solver->policy.feedback;
+  const feedback_erwas *const e = fb->erwas + idx;
+  const unsigned dec = e->updates[FEEDBACK_Q_DEC];
+  const unsigned ast = e->updates[FEEDBACK_Q_AST];
+  const unsigned prop = e->updates[FEEDBACK_Q_PROP];
+  double *const p = record->base;
+  p[FEEDBACK_PREDICT_DEC] = dec ? e->q[FEEDBACK_Q_DEC] : NAN;
+  p[FEEDBACK_PREDICT_IMP] = ast || prop ? e->q[FEEDBACK_Q_IMP] : NAN;
+  p[FEEDBACK_PREDICT_ALL] = solver->score[idx];
+  p[FEEDBACK_PREDICT_CONST] =
+      fb->m1.sum_n ? fb->m1.sum_r / fb->m1.sum_n : NAN;
+  double *const v = record->extra;
+  v[FEEDBACK_L_AST] = ast ? e->q[FEEDBACK_Q_AST] : NAN;
+  v[FEEDBACK_L_PROP] = prop ? e->q[FEEDBACK_Q_PROP] : NAN;
+  const bool any = dec || ast || prop;
+  for (unsigned i = 0; i < FEEDBACK_WEIGHTS; i++)
+    v[FEEDBACK_L_W + i] = any ? e->w[i] : NAN;
+  for (unsigned i = 0; i < FEEDBACK_GRID; i++) {
+    const bool asserted = ast && grid_a[i % FEEDBACK_GRID_A] > 0;
+    v[FEEDBACK_L_GRID + i] = dec || prop || asserted ? e->grid[i] : NAN;
+  }
+  for (unsigned i = FEEDBACK_L_PREDICTORS; i < FEEDBACK_EXTRA; i++)
+    v[i] = NAN;
+}
+
+#ifndef NDEBUG
+
+// Check (d) of the pre-check: the predictors of a pick computed a second
+// time, by code of its own, with the weights per mille and its own bins:
+// on the VSIDS line from the per-variable sums and the shadow tables of the
+// cells, on the LRB line from the ERWAs that the check updates itself, and
+// the definedness of the weighted ones from the steps' factors.  At the
+// event the frozen predictors must equal them bitwise.
+
+static void check_freeze_vsids (kissat *solver, unsigned idx,
+                                feedback_record *record) {
+  feedback *const fb = &solver->policy.feedback;
+  double *const base = record->check_base;
+  double *const extra = record->check_extra;
+  const double nd = fb->n[FEEDBACK_DEC][idx], ni = fb->n[FEEDBACK_IMP][idx];
+  const double rd = fb->r[FEEDBACK_DEC][idx], ri = fb->r[FEEDBACK_IMP][idx];
+  base[FEEDBACK_PREDICT_DEC] = nd > 0 ? rd / nd : NAN;
+  base[FEEDBACK_PREDICT_IMP] = ni > 0 ? ri / ni : NAN;
+  base[FEEDBACK_PREDICT_ALL] = nd + ni > 0 ? (rd + ri) / (nd + ni) : NAN;
+  base[FEEDBACK_PREDICT_CONST] =
+      fb->m1.sum_k ? (double) fb->m1.sum_b / fb->m1.sum_k : NAN;
+  const feedback_classes *const c = fb->classes + idx;
+  const double na = c->n[FEEDBACK_AST], np = c->n[FEEDBACK_PROP];
+  const double ra = c->r[FEEDBACK_AST], rp = c->r[FEEDBACK_PROP];
+  extra[FEEDBACK_V_AST] = na > 0 ? ra / na : NAN;
+  extra[FEEDBACK_V_PROP] = np > 0 ? rp / np : NAN;
+  for (unsigned i = 0; i < FEEDBACK_WEIGHTS; i++) {
+    const double w = two_class_permille[i] / 1000.0;
+    const double d = nd + w * ni;
+    extra[FEEDBACK_V_W + i] = d > 0 ? (rd + w * ri) / d : NAN;
+  }
+  unsigned i = FEEDBACK_V_GRID;
+  for (unsigned j = 0; j < FEEDBACK_GRID_W; j++)
+    for (unsigned l = 0; l < FEEDBACK_GRID_A; l++, i++) {
+      const double w = grid_w_permille[j] / 1000.0;
+      const double a = grid_a_permille[l] / 1000.0;
+      const double d = nd + a * na + w * np;
+      extra[i] = d > 0 ? (rd + a * ra + w * rp) / d : NAN;
+    }
+  assert (i == FEEDBACK_V_MEAN);
+  const double sd = c->rates[FEEDBACK_DEC], si = c->rates[FEEDBACK_IMP];
+  const double wd = c->weights[FEEDBACK_DEC], wi = c->weights[FEEDBACK_IMP];
+  extra[FEEDBACK_V_MEAN] = wd > 0 ? sd / wd : NAN;
+  extra[FEEDBACK_V_MEAN + 1] = wd + wi > 0 ? (sd + si) / (wd + wi) : NAN;
+  extra[FEEDBACK_V_MEAN + 2] = wi > 0 ? si / wi : NAN;
+  const double y = fb->yield[idx];
+  const unsigned bin_y = y >= 64  ? FEEDBACK_YIELD_ABOVE64
+                         : y >= 16 ? FEEDBACK_YIELD_BELOW64
+                         : y >= 4  ? FEEDBACK_YIELD_BELOW16
+                         : y >= 2  ? FEEDBACK_YIELD_BELOW4
+                         : y > 0   ? FEEDBACK_YIELD_BELOW2
+                                   : FEEDBACK_YIELD_NONE;
+  const double p_1 = base[FEEDBACK_PREDICT_ALL];
+  unsigned bin_p = FEEDBACK_BINS;
+  if (!isnan (p_1)) {
+    const double tenths = 10 * p_1;
+    bin_p = tenths >= 9 ? 9 : (unsigned) tenths;
+  }
+  record->check_y = bin_y;
+  record->check_p = bin_p;
+  const feedback_cells *const cells = &fb->check.cells;
+  double *const bins = extra + FEEDBACK_V_BIN;
+  if (bin_p == FEEDBACK_BINS || !cells->n_yp[bin_y][bin_p])
+    bins[0] = bins[1] = bins[2] = bins[3] = NAN;
+  else {
+    bins[0] = cells->y[bin_y] / cells->n_y[bin_y];
+    bins[1] = cells->p[bin_p] / cells->n_p[bin_p];
+    bins[2] = cells->yp[bin_y][bin_p] / cells->n_yp[bin_y][bin_p];
+    bins[3] = p_1;
+  }
+}
+
+static void check_freeze_lrb (kissat *solver, unsigned idx,
+                              feedback_record *record) {
+  feedback *const fb = &solver->policy.feedback;
+  const feedback_erwas *const e = fb->check.shadow + idx;
+  double *const base = record->check_base;
+  double *const extra = record->check_extra;
+  const unsigned *const updates = e->updates;
+  base[FEEDBACK_PREDICT_DEC] =
+      updates[FEEDBACK_Q_DEC] ? e->q[FEEDBACK_Q_DEC] : NAN;
+  base[FEEDBACK_PREDICT_IMP] =
+      updates[FEEDBACK_Q_AST] + updates[FEEDBACK_Q_PROP]
+          ? e->q[FEEDBACK_Q_IMP]
+          : NAN;
+  base[FEEDBACK_PREDICT_ALL] = solver->score[idx];
+  base[FEEDBACK_PREDICT_CONST] =
+      fb->check.sum_n ? fb->check.sum_r / fb->check.sum_n : NAN;
+  extra[FEEDBACK_L_AST] =
+      updates[FEEDBACK_Q_AST] ? e->q[FEEDBACK_Q_AST] : NAN;
+  extra[FEEDBACK_L_PROP] =
+      updates[FEEDBACK_Q_PROP] ? e->q[FEEDBACK_Q_PROP] : NAN;
+  for (unsigned i = 0; i < FEEDBACK_WEIGHTS + FEEDBACK_GRID; i++) {
+    bool defined = false;
+    for (unsigned c = 0; c < 3; c++)
+      if (updates[c] && fb->factors[c][i] > 0)
+        defined = true;
+    const double q = i < FEEDBACK_WEIGHTS ? e->w[i]
+                                          : e->grid[i - FEEDBACK_WEIGHTS];
+    extra[FEEDBACK_L_W + i] = defined ? q : NAN;
+  }
+  for (unsigned i = FEEDBACK_L_PREDICTORS; i < FEEDBACK_EXTRA; i++)
+    extra[i] = NAN;
+}
+
+// At the event: the frozen predictors ('base' M1's four) against the
+// check's, NaN for an undefined one, and on the VSIDS line the cells.
+
+static bool same_predictor (double a, double b) {
+  return isnan (a) ? isnan (b) : kissat_same_double (a, b);
+}
+
+static void check_record (kissat *solver, unsigned idx, const double *base,
+                          const feedback_record *record) {
+  feedback *const fb = &solver->policy.feedback;
+  for (unsigned i = 0; i < FEEDBACK_PREDICTORS; i++)
+    if (!same_predictor (base[i], record->check_base[i]))
+      kissat_fatal ("feedback: M1's predictor %u of the pick of variable "
+                    "%u frozen as %.17g, but the check gives %.17g",
+                    i, idx, base[i], record->check_base[i]);
+  for (unsigned i = 0; i < FEEDBACK_EXTRA; i++)
+    if (!same_predictor (record->extra[i], record->check_extra[i]))
+      kissat_fatal ("feedback: the pre-check's predictor %u of the pick of "
+                    "variable %u frozen as %.17g, but the check gives "
+                    "%.17g",
+                    i, idx, record->extra[i], record->check_extra[i]);
+  if (!fb->lrb && (record->bin_y != record->check_y ||
+                   record->bin_p != record->check_p))
+    kissat_fatal ("feedback: the pick of variable %u in the cell (%u, %u) "
+                  "of the yield predictors, but the check gives (%u, %u)",
+                  idx, record->bin_y, record->bin_p, record->check_y,
+                  record->check_p);
+  fb->check.predictors++;
+}
+
+#endif
+
+// VSIDS line: the pre-check's part of the event of 'idx', in M1's group
+// 'group', of 'k' rounds and 'b' bumped ones.  With k >= 1 its predictors
+// score it, but in the group without p_const, p_ast and p_prop add it to
+// their calibration bins in the main group, and it joins the cells of the
+// yield predictors.  Its record is freed.
+
+static void close_vsids_event (kissat *solver, unsigned idx,
+                               unsigned group, uint64_t k, uint64_t b) {
+  feedback *const fb = &solver->policy.feedback;
+  const feedback_record *const record = record_of (fb, idx);
+#ifndef NDEBUG
+  check_record (solver, idx, fb->frozen + FEEDBACK_PREDICTORS * idx,
+                record);
+#endif
+  if (k) {
+    const double *const v = record->extra;
+    if (group != FEEDBACK_GROUP_NO_CONST)
+      add_extra (fb->m1.extra + group, v, FEEDBACK_V_PREDICTORS, k, b);
+    if (group == FEEDBACK_GROUP_BOTH)
+      for (unsigned j = 0; j < 2; j++) {
+        const double q = v[FEEDBACK_V_AST + j];
+        if (!isnan (q))
+          add_interval (&fb->m1.calibration3[j][calibration_bin (q)], v,
+                        0, k, b);
+      }
+    const double rate = (double) b / k;
+    add_cells (&fb->m1.cells, record->bin_y, record->bin_p, rate);
+#ifndef NDEBUG
+    feedback_cells *const cells = &fb->check.cells;
+    const unsigned y = record->check_y, p = record->check_p;
+    cells->n_y[y] += 1, cells->y[y] += rate;
+    if (p < FEEDBACK_BINS) {
+      cells->n_p[p] += 1, cells->p[p] += rate;
+      cells->n_yp[y][p] += 1, cells->yp[y][p] += rate;
+    }
+#endif
+  }
+  free_record (solver, idx);
+}
+
+// LRB line: the event of 'idx', with LRB's 'reward' if 'paid', in M1's
+// group of its four predictors, their calibration bins and those of Q_ast
+// and Q_prop in the main group, and the pre-check's predictors; without a
+// reward it is counted apart.  Its record is freed.
+
+static void close_lrb_event (kissat *solver, unsigned idx, bool paid,
+                             double reward) {
+  feedback *const fb = &solver->policy.feedback;
+  const feedback_record *const record = record_of (fb, idx);
+  const double *const p = record->base;
+#ifndef NDEBUG
+  check_record (solver, idx, p, record);
+#endif
+  fb->m1.events++;
+  if (!paid)
+    fb->m1.zero++;
+  else {
+    const unsigned group = group_of (p, true);
+    add_payment (fb->m1.group + group, p, group_mask[1][group], reward);
+    if (group == FEEDBACK_GROUP_BOTH) {
+      for (unsigned d = 0; d < 2; d++) {
+        const double q = p[d ? FEEDBACK_PREDICT_IMP : FEEDBACK_PREDICT_DEC];
+        add_payment (&fb->m1.calibration[d][calibration_bin (q)], p, 0,
+                     reward);
+      }
+      for (unsigned j = 0; j < 2; j++) {
+        const double q = record->extra[FEEDBACK_L_AST + j];
+        if (!isnan (q))
+          add_payment (&fb->m1.calibration3[j][calibration_bin (q)], p, 0,
+                       reward);
+      }
+    }
+    if (group != FEEDBACK_GROUP_NO_CONST)
+      add_extra_payment (fb->m1.extra + group, record->extra,
+                         FEEDBACK_L_PREDICTORS, reward);
+  }
+  free_record (solver, idx);
+}
+
+// LRB line: an update of Q of 'idx' by an interval of class 'c' with
+// 'reward' at step size 'alpha', as LRB's: the ERWA of its class, Q_imp if
+// it is implied, and the weighted ones at their steps.  Assertion builds
+// update Q_1 and the check's ERWAs, with steps of their own, and hold Q_1
+// to LRB's Q.
+
+static inline double erwa (double q, double step, double reward) {
+  return (1 - step) * q + step * reward;
+}
+
+#ifndef NDEBUG
+
+static void check_update_erwas (kissat *solver, unsigned idx, unsigned c,
+                                double reward, double alpha) {
+  feedback *const fb = &solver->policy.feedback;
+  double *const q1 = fb->check.q1 + idx;
+  *q1 = (1 - alpha) * *q1 + alpha * reward;
+  if (!kissat_same_double (*q1, solver->score[idx]))
+    kissat_fatal ("feedback: Q_1 %.17g of variable %u differs from LRB's "
+                  "Q %.17g",
+                  *q1, idx, solver->score[idx]);
+  fb->check.erwas++;
+  feedback_erwas *const e = fb->check.shadow + idx;
+  e->q[c] = (1 - alpha) * e->q[c] + alpha * reward;
+  if (c != INTERVALS_DECIDED)
+    e->q[FEEDBACK_Q_IMP] =
+        (1 - alpha) * e->q[FEEDBACK_Q_IMP] + alpha * reward;
+  e->updates[c]++;
+  for (unsigned i = 0; i < FEEDBACK_WEIGHTS; i++) {
+    const unsigned w = two_class_permille[i];
+    const double factor = c == INTERVALS_DECIDED
+                              ? 1000.0 / (w > 1000 ? w : 1000)
+                              : (w < 1000 ? w : 1000) / 1000.0;
+    const double step = alpha * factor;
+    e->w[i] = (1 - step) * e->w[i] + step * reward;
+  }
+  unsigned i = 0;
+  for (unsigned j = 0; j < FEEDBACK_GRID_W; j++)
+    for (unsigned l = 0; l < FEEDBACK_GRID_A; l++, i++) {
+      const unsigned w = grid_w_permille[j], a = grid_a_permille[l];
+      const unsigned weight = c == INTERVALS_DECIDED   ? 1000
+                              : c == INTERVALS_ASSERTED ? a
+                                                        : w;
+      unsigned largest = w > a ? w : a;
+      if (largest < 1000)
+        largest = 1000;
+      const double step = alpha * ((double) weight / largest);
+      if (step > 0)
+        e->grid[i] = (1 - step) * e->grid[i] + step * reward;
+    }
+  if (c == INTERVALS_DECIDED)
+    fb->check.sum_n++, fb->check.sum_r += reward;
+}
+
+#endif
+
+static void update_erwas (kissat *solver, unsigned idx, unsigned c,
+                          double reward, double alpha) {
+  feedback *const fb = &solver->policy.feedback;
+  feedback_erwas *const e = fb->erwas + idx;
+  assert (c <= INTERVALS_PROPAGATED);
+  const unsigned q = c == INTERVALS_DECIDED   ? FEEDBACK_Q_DEC
+                     : c == INTERVALS_ASSERTED ? FEEDBACK_Q_AST
+                                               : FEEDBACK_Q_PROP;
+  e->q[q] = erwa (e->q[q], alpha, reward);
+  e->updates[q]++;
+  if (q == FEEDBACK_Q_DEC)
+    fb->m1.intervals[FEEDBACK_DEC]++;
+  else {
+    e->q[FEEDBACK_Q_IMP] = erwa (e->q[FEEDBACK_Q_IMP], alpha, reward);
+    fb->m1.intervals[FEEDBACK_IMP]++;
+    fb->m1.intervals3[q == FEEDBACK_Q_AST ? FEEDBACK_AST : FEEDBACK_PROP]++;
+  }
+  const double *const factor = fb->factors[c];
+  for (unsigned i = 0; i < FEEDBACK_WEIGHTS; i++)
+    e->w[i] = erwa (e->w[i], alpha * factor[i], reward);
+  for (unsigned i = 0; i < FEEDBACK_GRID; i++) {
+    const double step = alpha * factor[FEEDBACK_WEIGHTS + i];
+    if (step > 0)
+      e->grid[i] = erwa (e->grid[i], step, reward);
+  }
+#ifndef NDEBUG
+  check_update_erwas (solver, idx, c, reward, alpha);
+#endif
 }
 
 // M2: a pending pick that was not followed by its decision, which happens
@@ -572,13 +1150,17 @@ static void stage_yields (kissat *solver) {
 // participants (CHB), so the step is a conflict of every open pick's
 // interval, which observes its level's variables taken when the step
 // started.  Outside a step, which only the unit tests make, they are
-// taken now.
+// taken now.  The step is one more of the locality key's 'c' ('steps', on
+// the VSIDS line the bump round); M3 does not run on the LRB line.
 
 void kissat_feedback_observe (kissat *solver) {
   feedback *const fb = &solver->policy.feedback;
   if (!fb->started)
     return;
   assert (solver->stable);
+  fb->steps++;
+  if (fb->lrb)
+    return;
   if (!solver->policy.intervals.analyzing)
     stage_yields (solver);
   uint64_t *const observed = fb->observed;
@@ -630,20 +1212,32 @@ void kissat_feedback_propagated (kissat *solver) {
 #endif
 }
 
-// VSIDS line: the interval of the active variable 'idx', of class 'c',
-// closes (see 'intervals.h'): at its unassignment in stable mode, after
-// the bump round of the analysis step whose backtrack ended it, or when
-// stable mode is left.  Its rounds go to the count of its class, as UCB's
-// do; a decided interval adds to the sums of p_const; the interval of a
-// pending pick is an event of M1 and the pick's outcome in M2 and M3.
+// VSIDS line: the interval of the active variable 'idx', of class 'three'
+// in 'intervals.h', closes (see 'intervals.h'): at its unassignment in
+// stable mode, after the bump round of the analysis step whose backtrack
+// ended it, or when stable mode is left.  Its rounds go to the count of
+// its class, decided or implied, as UCB's do, and an implied interval's to
+// that of its asserted or propagated class too; with a round its rate goes
+// to the sums of E_w; a decided interval adds to the sums of p_const; the
+// interval of a pending pick is an event of M1, of the pre-check, and the
+// pick's outcome in M2 and M3.
 
-static void close_interval (kissat *solver, unsigned idx, unsigned c) {
+static void close_interval (kissat *solver, unsigned idx, unsigned three) {
   feedback *const fb = &solver->policy.feedback;
   const intervals *const intervals = &solver->policy.intervals;
   assert (!fb->chb);
   assert (intervals->rounds);
+  const unsigned c = feedback_class (three);
   const double inc = solver->scinc;
-  fb->n[c][idx] += (inc - intervals->opened[idx]) / (fb->growth - 1);
+  const double rounds = (inc - intervals->opened[idx]) / (fb->growth - 1);
+  fb->n[c][idx] += rounds;
+  feedback_classes *const classes = fb->classes + idx;
+  if (three != INTERVALS_DECIDED) {
+    const unsigned j =
+        three == INTERVALS_ASSERTED ? FEEDBACK_AST : FEEDBACK_PROP;
+    classes->n[j] += rounds;
+    fb->m1.intervals3[j]++;
+  }
   const uint64_t round = solver->estimator.rounds;
   assert (intervals->start[idx] <= round);
   const uint64_t k = round - intervals->start[idx];
@@ -653,8 +1247,11 @@ static void close_interval (kissat *solver, unsigned idx, unsigned c) {
   check_interval (solver, idx, k, b);
 #endif
   fb->m1.intervals[c]++;
-  if (k)
+  if (k) {
     fb->last[idx] = round;
+    classes->rates[c] += inc * ((double) b / k);
+    classes->weights[c] += inc;
+  }
   if (c == FEEDBACK_DEC) {
     fb->m1.sum_k += k;
     fb->m1.sum_b += b;
@@ -664,13 +1261,15 @@ static void close_interval (kissat *solver, unsigned idx, unsigned c) {
   if (state & FEEDBACK_PENDING && c != FEEDBACK_DEC) {
     void_pick (fb, state);
     void_yield (fb, idx, state);
+    free_record (solver, idx);
   } else if (state & FEEDBACK_PENDING) {
     fb->m1.events++;
+    const double *const p = fb->frozen + FEEDBACK_PREDICTORS * idx;
+    unsigned group = FEEDBACK_GROUP_NO_CONST;
     if (!k)
       fb->m1.zero++;
     else {
-      const double *const p = fb->frozen + FEEDBACK_PREDICTORS * idx;
-      const unsigned group = group_of (p, false);
+      group = group_of (p, false);
       add_interval (fb->m1.group + group, p, group_mask[0][group], k, b);
       if (group == FEEDBACK_GROUP_BOTH)
         for (unsigned d = 0; d < 2; d++) {
@@ -679,10 +1278,59 @@ static void close_interval (kissat *solver, unsigned idx, unsigned c) {
                         k, b);
         }
     }
+    close_vsids_event (solver, idx, group, k, b);
     add_outcome (fb, state, k, b, 0);
     add_yield (solver, idx, state, k, b, 0);
   }
   fb->state[idx] = 0;
+}
+
+// LRB line: the interval of 'idx', of class 'c' in 'intervals.h', closes,
+// and LRB's close of it, just before, said what it did ('closing').  The
+// decided interval of a pending pick is an event, without a reward if it
+// spanned no conflict; a pick whose interval LRB's walk did not open,
+// which only the unit tests make, is taken back.  An update of Q feeds the
+// ERWAs of the interval's class and the weighted ones, and Q_const's sums
+// if the interval is decided.
+
+static void close_lrb (kissat *solver, unsigned idx, unsigned c) {
+  feedback *const fb = &solver->policy.feedback;
+  const unsigned how = fb->closing.how;
+  const double reward = fb->closing.reward, alpha = fb->closing.alpha;
+  fb->closing.how = FEEDBACK_LRB_NONE;
+  assert (how != FEEDBACK_LRB_NONE);
+  const bool paid = how == FEEDBACK_LRB_PAID;
+  const bool decided = c == INTERVALS_DECIDED;
+  if (fb->state[idx] & FEEDBACK_PENDING) {
+    fb->state[idx] = 0;
+    if (decided && how != FEEDBACK_LRB_IGNORED)
+      close_lrb_event (solver, idx, paid, reward);
+    else {
+      assert (fb->m1.picks);
+      fb->m1.picks--;
+      free_record (solver, idx);
+    }
+  }
+  if (!paid)
+    return;
+  if (decided) {
+    fb->m1.sum_n++;
+    fb->m1.sum_r += reward;
+  }
+  update_erwas (solver, idx, c, reward, alpha);
+}
+
+void kissat_feedback_lrb_close (kissat *solver, unsigned how, double reward,
+                                double alpha) {
+  feedback *const fb = &solver->policy.feedback;
+  if (!fb->started)
+    return;
+  assert (fb->lrb);
+  assert (fb->closing.how == FEEDBACK_LRB_NONE);
+  assert (how != FEEDBACK_LRB_NONE);
+  fb->closing.how = how;
+  fb->closing.reward = reward;
+  fb->closing.alpha = alpha;
 }
 
 // CHB line: the interval of the pending pick of 'idx' closes, for M3: at
@@ -706,8 +1354,9 @@ static void close_yield (kissat *solver, unsigned idx) {
 
 // The assignment interval of 'idx', of class 'c' in 'intervals.h', closes:
 // on the VSIDS line M1's interval, on the CHB line M3's pending pick, if
-// 'idx' has one.  On the CHB line a close that a backtrack of an analysis
-// step deferred happens at the step's end, after its conflict.
+// 'idx' has one, and on the LRB line LRB's interval.  On the CHB and LRB
+// lines a close that a backtrack of an analysis step deferred happens at
+// the step's end, after its conflict.
 
 void kissat_close_feedback_interval (kissat *solver, unsigned idx,
                                      unsigned c) {
@@ -715,20 +1364,23 @@ void kissat_close_feedback_interval (kissat *solver, unsigned idx,
   if (!fb->started)
     return;
   assert (solver->stable);
-  if (!fb->chb)
-    close_interval (solver, idx, feedback_class (c));
+  if (fb->lrb)
+    close_lrb (solver, idx, c);
+  else if (!fb->chb)
+    close_interval (solver, idx, c);
   else if (fb->state[idx] & FEEDBACK_YIELD)
     close_yield (solver, idx);
 }
 
 // A step of conflict analysis starts, before its backtracks.  M3 takes the
-// open picks' levels and their variables, on both lines.  On the VSIDS
+// open picks' levels and their variables, on the VSIDS and CHB lines (M3
+// does not run on the LRB line).  On the VSIDS
 // line assertion builds list the active variables assigned now, which the
 // step's bump round observes.
 
 void kissat_feedback_begin_analysis (kissat *solver) {
   feedback *const fb = &solver->policy.feedback;
-  if (!fb->started || !solver->stable)
+  if (!fb->started || !solver->stable || fb->lrb)
     return;
   stage_yields (solver);
 #ifndef NDEBUG
@@ -800,17 +1452,26 @@ void kissat_feedback_round_end (kissat *solver) {
 }
 
 // The sums in units of the increment follow the scores' rescale, as the
-// increments at assignment do (see 'intervals.h').
+// increments at assignment do (see 'intervals.h'), those of the three
+// classes and of E_w too.
 
 void kissat_rescale_feedback (kissat *solver, double factor) {
   feedback *const fb = &solver->policy.feedback;
   if (!fb->started || fb->chb)
     return;
-  for (all_variables (idx))
+  for (all_variables (idx)) {
     for (unsigned c = 0; c < 2; c++) {
       fb->n[c][idx] *= factor;
       fb->r[c][idx] *= factor;
     }
+    feedback_classes *const classes = fb->classes + idx;
+    for (unsigned c = 0; c < 2; c++) {
+      classes->n[c] *= factor;
+      classes->r[c] *= factor;
+      classes->rates[c] *= factor;
+      classes->weights[c] *= factor;
+    }
+  }
 }
 
 // CHB line: a payment.  If its variable is decided it is an event of M1,
@@ -901,13 +1562,83 @@ void kissat_shadow_feedback_paid (kissat *solver, unsigned idx) {
 
 #endif
 
+// VSIDS line: the difference between the asserted and propagated sums of
+// 'idx' added up and its implied sum, of its rounds ('bumps' false) or of
+// its bumps, which differ only by rounding: in units of the increment
+// 'inc', relative to one plus the implied sum, as UCB's counts are checked
+// (a plain relative difference of sums decayed to subnormal numbers would
+// measure their lost precision).
+
+static double classes_difference (const feedback *fb, unsigned idx,
+                                  bool bumps, double inc) {
+  const feedback_classes *const c = fb->classes + idx;
+  const double split =
+      bumps ? c->r[FEEDBACK_AST] + c->r[FEEDBACK_PROP]
+            : c->n[FEEDBACK_AST] + c->n[FEEDBACK_PROP];
+  const double implied =
+      bumps ? fb->r[FEEDBACK_IMP][idx] : fb->n[FEEDBACK_IMP][idx];
+  return fabs (split / inc - implied / inc) / (1 + implied / inc);
+}
+
 #ifndef NDEBUG
 
 // Every 1000 picks: the counts against UCB's (see 'feedback.h'), on VSIDS
 // scores those of UCB counting LRB's interval, the only count UCB keeps in
-// feedback builds (see 'intervals.h'), on the same intervals.
+// feedback builds (see 'intervals.h'), on the same intervals.  On the
+// VSIDS line the asserted and propagated sums against the implied ones,
+// and on the LRB line Q_1 against LRB's Q and the ERWAs against the
+// check's.
 
 #define FEEDBACK_CHECK_TOLERANCE 1e-12
+
+static void check_classes (kissat *solver, uint64_t pick) {
+  feedback *const fb = &solver->policy.feedback;
+  const flags *const flags = solver->flags;
+  const double inc = solver->scinc;
+  for (all_variables (idx)) {
+    if (!flags[idx].active)
+      continue;
+    for (unsigned bumps = 0; bumps < 2; bumps++) {
+      const double error = classes_difference (fb, idx, bumps, inc);
+      fb->check.classes++;
+      if (error > fb->check.classes_error)
+        fb->check.classes_error = error;
+      if (!(error <= FEEDBACK_CHECK_TOLERANCE))
+        kissat_fatal ("feedback: pick %" PRIu64 ": the asserted and "
+                      "propagated %s of variable %u differ from the "
+                      "implied ones by %.3g",
+                      pick, bumps ? "bumps" : "rounds", idx, error);
+    }
+  }
+}
+
+static void check_erwas (kissat *solver, uint64_t pick) {
+  feedback *const fb = &solver->policy.feedback;
+  const flags *const flags = solver->flags;
+  for (all_variables (idx)) {
+    if (!flags[idx].active)
+      continue;
+    if (!kissat_same_double (fb->check.q1[idx], solver->score[idx]))
+      kissat_fatal ("feedback: pick %" PRIu64 ": Q_1 %.17g of variable %u "
+                    "differs from LRB's Q %.17g",
+                    pick, fb->check.q1[idx], idx, solver->score[idx]);
+    const feedback_erwas *const e = fb->erwas + idx;
+    const feedback_erwas *const s = fb->check.shadow + idx;
+    bool same = true;
+    for (unsigned i = 0; i < 4; i++)
+      same &= kissat_same_double (e->q[i], s->q[i]);
+    for (unsigned i = 0; i < FEEDBACK_WEIGHTS; i++)
+      same &= kissat_same_double (e->w[i], s->w[i]);
+    for (unsigned i = 0; i < FEEDBACK_GRID; i++)
+      same &= kissat_same_double (e->grid[i], s->grid[i]);
+    for (unsigned i = 0; i < 3; i++)
+      same &= e->updates[i] == s->updates[i];
+    if (!same)
+      kissat_fatal ("feedback: pick %" PRIu64 ": the ERWAs of variable %u "
+                    "differ from the check's",
+                    pick, idx);
+  }
+}
 
 static void complete_check (kissat *solver) {
   feedback *const fb = &solver->policy.feedback;
@@ -917,7 +1648,12 @@ static void complete_check (kissat *solver) {
   const keys *const keys = &solver->policy.keys;
   const flags *const flags = solver->flags;
   const uint64_t pick = fb->check.picks;
+  if (fb->lrb) {
+    check_erwas (solver, pick);
+    return;
+  }
   if (!fb->chb) {
+    check_classes (solver, pick);
     if (!keys->intervals)
       return;
     const intervals *const intervals = &solver->policy.intervals;
@@ -980,13 +1716,34 @@ static void complete_check (kissat *solver) {
 
 #endif
 
+// LRB line: a pick, pending until its interval closes, with M1's four
+// predictors and the pre-check's frozen.  A pending pick not followed by
+// its decision, which only the unit tests make, is taken back.
+
+static void pick_lrb (kissat *solver, unsigned idx) {
+  feedback *const fb = &solver->policy.feedback;
+  if (fb->state[idx] & FEEDBACK_PENDING) {
+    assert (fb->m1.picks);
+    fb->m1.picks--;
+    free_record (solver, idx);
+  }
+  fb->m1.picks++;
+  feedback_record *const record = new_record (solver, idx);
+  freeze_lrb (solver, idx, record);
+#ifndef NDEBUG
+  check_freeze_lrb (solver, idx, record);
+#endif
+  fb->state[idx] = FEEDBACK_PENDING;
+}
+
 // A pick of the policy.  In search, in stable mode, it is pending until
 // its outcome, with its kind and its variable's age and count bins, and on
-// the VSIDS line the four predictors of M1 are frozen: the variable is
-// assigned as a decision right after the pick, and its counts and the sums
-// of p_const do not change before its interval opens.  For M3 it is
-// pending until its interval closes, with the bin of 'Y_v', and awaits the
-// end of the propagation that follows its decision.
+// the VSIDS line the four predictors of M1 are frozen, and the pre-check's
+// in a record: the variable is assigned as a decision right after the
+// pick, and its sums and those of p_const and of the cells do not change
+// before its interval opens.  For M3 it is pending until its interval
+// closes, with the bin of 'Y_v', and awaits the end of the propagation
+// that follows its decision.  The LRB line has a pick of its own.
 
 void kissat_feedback_pick (kissat *solver, unsigned idx, bool uniform) {
   feedback *const fb = &solver->policy.feedback;
@@ -998,10 +1755,16 @@ void kissat_feedback_pick (kissat *solver, unsigned idx, bool uniform) {
     return;
   assert (solver->stable);
   assert (!VALUE (LIT (idx)));
-  const unsigned old_state = fb->state[idx];
   assert (!(solver->policy.intervals.state[idx] & INTERVALS_OPEN));
-  if (old_state & FEEDBACK_PENDING)
+  if (fb->lrb) {
+    pick_lrb (solver, idx);
+    return;
+  }
+  const unsigned old_state = fb->state[idx];
+  if (old_state & FEEDBACK_PENDING) {
     void_pick (fb, old_state);
+    free_record (solver, idx);
+  }
   if (old_state & FEEDBACK_YIELD)
     void_yield (fb, idx, old_state);
   assert (!fb->propagated[idx]), assert (!fb->observed[idx]);
@@ -1035,12 +1798,197 @@ void kissat_feedback_pick (kissat *solver, unsigned idx, bool uniform) {
     p[FEEDBACK_PREDICT_ALL] = n > 0 ? (r_dec + r_imp) / n : NAN;
     p[FEEDBACK_PREDICT_CONST] =
         fb->m1.sum_k ? (double) fb->m1.sum_b / fb->m1.sum_k : NAN;
+    feedback_record *const record = new_record (solver, idx);
+    freeze_vsids (solver, idx, record, p[FEEDBACK_PREDICT_ALL],
+                  yield_bin (fb->yield[idx]));
+#ifndef NDEBUG
+    check_freeze_vsids (solver, idx, record);
+#endif
   }
   fb->state[idx] = FEEDBACK_PENDING | kind << FEEDBACK_KIND_SHIFT |
                    age << FEEDBACK_AGE_SHIFT |
                    count_bin (count) << FEEDBACK_COUNT_SHIFT |
                    FEEDBACK_YIELD |
                    yield_bin (fb->yield[idx]) << FEEDBACK_YIELD_SHIFT;
+}
+
+// The differ pass's keys of the unassigned variable 'idx', the reference
+// last (see 'feedback.h').  The locality key is its key 's' times lambda
+// to the steps since the variable's last stable-mode unassignment, in
+// logarithms (minus infinity for zero).
+
+static double locality_key (const feedback *fb, unsigned idx, double s) {
+  assert (fb->unassigned[idx] <= fb->steps);
+  const double age = fb->steps - fb->unassigned[idx];
+  return log (s) + age * fb->log_lambda;
+}
+
+static void vsids_keys (kissat *solver, unsigned idx, double *key) {
+  const feedback *const fb = &solver->policy.feedback;
+  const feedback_classes *const c = fb->classes + idx;
+  const double r_dec = fb->r[FEEDBACK_DEC][idx];
+  const double r_imp = fb->r[FEEDBACK_IMP][idx];
+  const double r_ast = c->r[FEEDBACK_AST], r_prop = c->r[FEEDBACK_PROP];
+  const double s_1 = r_dec + r_imp;
+  key[FEEDBACK_KEY_W] = r_dec;
+  for (unsigned i = 0; i < FEEDBACK_WEIGHTS; i++)
+    key[FEEDBACK_KEY_W + 1 + i] = r_dec + two_class_w[i] * r_imp;
+  key[FEEDBACK_KEY_W + 1 + FEEDBACK_WEIGHTS] = r_imp;
+  for (unsigned i = 0; i < FEEDBACK_GRID; i++) {
+    const double w = grid_w[i / FEEDBACK_GRID_A];
+    const double a = grid_a[i % FEEDBACK_GRID_A];
+    key[FEEDBACK_KEY_GRID + i] = r_dec + a * r_ast + w * r_prop;
+  }
+  const double n = fb->n[FEEDBACK_DEC][idx] + fb->n[FEEDBACK_IMP][idx];
+  key[FEEDBACK_KEY_V_RATE] = n > 0 ? s_1 / n : 0;
+  key[FEEDBACK_KEY_V_LOCALITY] = locality_key (fb, idx, s_1);
+  key[FEEDBACK_KEY_V_INTERVAL] =
+      c->rates[FEEDBACK_DEC] + c->rates[FEEDBACK_IMP];
+  key[FEEDBACK_KEY_V_SCORE] = solver->score[idx];
+  key[FEEDBACK_V_KEYS] = s_1;
+}
+
+static void lrb_keys (kissat *solver, unsigned idx, double *key) {
+  const feedback *const fb = &solver->policy.feedback;
+  const feedback_erwas *const e = fb->erwas + idx;
+  key[FEEDBACK_KEY_W] = e->q[FEEDBACK_Q_DEC];
+  for (unsigned i = 0; i < FEEDBACK_WEIGHTS; i++)
+    key[FEEDBACK_KEY_W + 1 + i] = e->w[i];
+  key[FEEDBACK_KEY_W + 1 + FEEDBACK_WEIGHTS] = e->q[FEEDBACK_Q_IMP];
+  for (unsigned i = 0; i < FEEDBACK_GRID; i++)
+    key[FEEDBACK_KEY_GRID + i] = e->grid[i];
+  const double q = solver->score[idx];
+  key[FEEDBACK_KEY_L_LOCALITY] = locality_key (fb, idx, q);
+  key[FEEDBACK_KEY_L_SCORE] = q;
+  key[FEEDBACK_L_KEYS] = q;
+}
+
+#ifndef NDEBUG
+
+// Check (d) of the differ pass: the key 'i' of 'idx' alone, by code of its
+// own with the weights per mille, and a pass of its own per key, which
+// must find the argmaxes that the differ pass found.
+
+static double key_of (kissat *solver, unsigned idx, unsigned i) {
+  const feedback *const fb = &solver->policy.feedback;
+  const double age = fb->steps - fb->unassigned[idx];
+  if (fb->lrb) {
+    const feedback_erwas *const e = fb->erwas + idx;
+    const double q = solver->score[idx];
+    if (i == FEEDBACK_KEY_W)
+      return e->q[FEEDBACK_Q_DEC];
+    if (i <= FEEDBACK_WEIGHTS)
+      return e->w[i - 1];
+    if (i < FEEDBACK_KEY_GRID)
+      return e->q[FEEDBACK_Q_IMP];
+    if (i < FEEDBACK_KEY_L_LOCALITY)
+      return e->grid[i - FEEDBACK_KEY_GRID];
+    if (i == FEEDBACK_KEY_L_LOCALITY)
+      return log (q) + age * fb->log_lambda;
+    return q; // the score and the reference
+  }
+  const double rd = fb->r[FEEDBACK_DEC][idx], ri = fb->r[FEEDBACK_IMP][idx];
+  const feedback_classes *const c = fb->classes + idx;
+  if (i == FEEDBACK_KEY_W)
+    return rd;
+  if (i <= FEEDBACK_WEIGHTS)
+    return rd + two_class_permille[i - 1] / 1000.0 * ri;
+  if (i < FEEDBACK_KEY_GRID)
+    return ri;
+  if (i < FEEDBACK_KEY_V_RATE) {
+    const unsigned j = i - FEEDBACK_KEY_GRID;
+    const double w = grid_w_permille[j / FEEDBACK_GRID_A] / 1000.0;
+    const double a = grid_a_permille[j % FEEDBACK_GRID_A] / 1000.0;
+    return rd + a * c->r[FEEDBACK_AST] + w * c->r[FEEDBACK_PROP];
+  }
+  if (i == FEEDBACK_KEY_V_RATE) {
+    const double n = fb->n[FEEDBACK_DEC][idx] + fb->n[FEEDBACK_IMP][idx];
+    return n > 0 ? (rd + ri) / n : 0;
+  }
+  if (i == FEEDBACK_KEY_V_LOCALITY)
+    return log (rd + ri) + age * fb->log_lambda;
+  if (i == FEEDBACK_KEY_V_INTERVAL)
+    return c->rates[FEEDBACK_DEC] + c->rates[FEEDBACK_IMP];
+  if (i == FEEDBACK_KEY_V_SCORE)
+    return solver->score[idx];
+  return rd + ri; // the reference
+}
+
+static void check_differ (kissat *solver, const unsigned *argmax,
+                          unsigned keys) {
+  feedback *const fb = &solver->policy.feedback;
+  for (unsigned i = 0; i <= keys; i++) {
+    unsigned best = INVALID_IDX;
+    double largest = 0;
+    for (all_variables (idx)) {
+      if (!ACTIVE (idx) || VALUE (LIT (idx)))
+        continue;
+      const double key = key_of (solver, idx, i);
+      if (best == INVALID_IDX || key > largest)
+        best = idx, largest = key;
+    }
+    if (best != argmax[i])
+      kissat_fatal ("feedback: sample %" PRIu64 ": the argmax of key %u "
+                    "is variable %u, but the differ pass found %u",
+                    fb->differ.samples, i, best, argmax[i]);
+  }
+  fb->check.differ++;
+}
+
+#endif
+
+// The differ pass (see 'feedback.h'), at a search sample of the decision
+// metrics: one pass over the unassigned active variables, which only reads,
+// takes every key's argmax, the smallest index among ties, and counts the
+// keys whose argmax is not the reference's.
+
+void kissat_feedback_differ (kissat *solver) {
+  feedback *const fb = &solver->policy.feedback;
+  if (!fb->started || (fb->chb && !fb->lrb))
+    return;
+  assert (solver->stable), assert (!solver->warming);
+  const bool lrb = fb->lrb;
+  assert (lrb || fb->steps == solver->estimator.rounds);
+  const unsigned keys = lrb ? FEEDBACK_L_KEYS : FEEDBACK_V_KEYS;
+  unsigned argmax[FEEDBACK_KEYS + 1];
+  double largest[FEEDBACK_KEYS + 1], key[FEEDBACK_KEYS + 1];
+  for (unsigned i = 0; i <= keys; i++)
+    argmax[i] = INVALID_IDX, largest[i] = -INFINITY;
+  const flags *const flags = solver->flags;
+  const value *const values = solver->values;
+  for (all_variables (idx)) {
+    if (!flags[idx].active || values[LIT (idx)])
+      continue;
+    if (lrb)
+      lrb_keys (solver, idx, key);
+    else
+      vsids_keys (solver, idx, key);
+    for (unsigned i = 0; i <= keys; i++)
+      if (argmax[i] == INVALID_IDX || key[i] > largest[i])
+        argmax[i] = idx, largest[i] = key[i];
+  }
+  assert (argmax[keys] != INVALID_IDX);
+  fb->differ.samples++;
+  for (unsigned i = 0; i < keys; i++)
+    fb->differ.differ[i] += argmax[i] != argmax[keys];
+#ifndef NDEBUG
+  check_differ (solver, argmax, keys);
+#endif
+}
+
+#ifndef QUIET
+static void print_feedback (kissat *, const char *snapshot);
+#endif
+
+bool kissat_feedback_snapshot (kissat *solver) {
+  feedback *const fb = &solver->policy.feedback;
+  if (fb->snapshot || CONFLICTS < FEEDBACK_SNAPSHOT)
+    return false;
+  fb->snapshot = true;
+#ifndef QUIET
+  print_feedback (solver, "snapshot-");
+#endif
+  return false;
 }
 
 #ifndef QUIET
@@ -1120,17 +2068,107 @@ static void print_yields (kissat *solver, const char *prefix,
   print_count (solver, prefix, "obs", sums->obs);
 }
 
-#endif
+// The pre-check's names: of a predictor (in a record's 'extra') and of a
+// key of the differ pass, of the VSIDS or the LRB line, with the weights
+// per mille.
 
-// The 'feedback' section (see 'docs/feedback.md' for every line).  M2's
-// and M3's picks still open at the end are those pending, and every pick
-// is an outcome or open; M3's outcomes by age, by count and by the bin of
-// 'Y_v' are the same, and its uniform outcomes crossed with stale against
-// recent are its uniform outcomes by that bin (checked in assertion
-// builds).
+static void predictor_name (char *name, size_t size, bool lrb, unsigned i) {
+  static const char *const rest[FEEDBACK_V_PREDICTORS - FEEDBACK_V_MEAN] = {
+      "mean-w0",   "mean-w1000", "mean-winf", "bin-yield",
+      "bin-p",     "bin-yield-p", "bin-all"};
+  if (i == FEEDBACK_V_AST)
+    snprintf (name, size, "ast");
+  else if (i == FEEDBACK_V_PROP)
+    snprintf (name, size, "prop");
+  else if (i < FEEDBACK_V_GRID)
+    snprintf (name, size, "w%u", two_class_permille[i - FEEDBACK_V_W]);
+  else if (i < FEEDBACK_V_MEAN) {
+    const unsigned j = i - FEEDBACK_V_GRID;
+    snprintf (name, size, "w%u-a%u", grid_w_permille[j / FEEDBACK_GRID_A],
+              grid_a_permille[j % FEEDBACK_GRID_A]);
+  } else {
+    assert (!lrb), assert (i < FEEDBACK_V_PREDICTORS);
+    snprintf (name, size, "%s", rest[i - FEEDBACK_V_MEAN]);
+  }
+  (void) lrb;
+}
 
-void kissat_print_feedback_statistics (kissat *solver) {
-#ifndef QUIET
+static void key_name (char *name, size_t size, bool lrb, unsigned i) {
+  static const char *const rest[2][4] = {
+      {"rate", "locality", "interval", "score"}, {"locality", "score"}};
+  if (i == FEEDBACK_KEY_W)
+    snprintf (name, size, "w0");
+  else if (i <= FEEDBACK_WEIGHTS)
+    snprintf (name, size, "w%u", two_class_permille[i - 1]);
+  else if (i < FEEDBACK_KEY_GRID)
+    snprintf (name, size, "winf");
+  else if (i < FEEDBACK_KEY_GRID + FEEDBACK_GRID) {
+    const unsigned j = i - FEEDBACK_KEY_GRID;
+    snprintf (name, size, "w%u-a%u", grid_w_permille[j / FEEDBACK_GRID_A],
+              grid_a_permille[j % FEEDBACK_GRID_A]);
+  } else
+    snprintf (name, size, "%s",
+              rest[lrb][i - FEEDBACK_KEY_GRID - FEEDBACK_GRID]);
+}
+
+// The pre-check's predictors in M1's groups but the one without p_const or
+// Q_const: per predictor the events where it is defined, and its errors
+// there, per round and per interval on the VSIDS line, of the reward on the
+// LRB line.
+
+static void print_extra (kissat *solver, const char *snapshot,
+                         const char *line, bool lrb) {
+  const feedback *const fb = &solver->policy.feedback;
+  const unsigned count =
+      lrb ? FEEDBACK_L_PREDICTORS : FEEDBACK_V_PREDICTORS;
+  char prefix[96], name[48], predictor[32];
+  assert (FEEDBACK_GROUP_NO_CONST + 1 == FEEDBACK_GROUPS);
+  for (unsigned g = 0; g < FEEDBACK_GROUP_NO_CONST; g++) {
+    const feedback_extra *const sums = fb->m1.extra + g;
+    snprintf (prefix, sizeof prefix, "%sfeedback-m1-%s-%s", snapshot, line,
+              group_names[g]);
+    for (unsigned i = 0; i < count; i++) {
+      predictor_name (predictor, sizeof predictor, lrb, i);
+      snprintf (name, sizeof name, "n-%s", predictor);
+      print_count (solver, prefix, name, sums->n[i]);
+      if (lrb) {
+        snprintf (name, sizeof name, "error-%s", predictor);
+        print_double (solver, prefix, name, sums->interval[i]);
+      } else {
+        snprintf (name, sizeof name, "round-error-%s", predictor);
+        print_double (solver, prefix, name, sums->round[i]);
+        snprintf (name, sizeof name, "interval-error-%s", predictor);
+        print_double (solver, prefix, name, sums->interval[i]);
+      }
+    }
+  }
+}
+
+// The differ pass: its samples, and per key those where its argmax
+// differed from the reference's.
+
+static void print_differ (kissat *solver, const char *snapshot,
+                          const char *line, bool lrb) {
+  const feedback *const fb = &solver->policy.feedback;
+  const unsigned keys = lrb ? FEEDBACK_L_KEYS : FEEDBACK_V_KEYS;
+  char prefix[96], name[48];
+  snprintf (prefix, sizeof prefix, "%sfeedback-%s-differ-", snapshot, line);
+  print_count (solver, prefix, "samples", fb->differ.samples);
+  for (unsigned i = 0; i < keys; i++) {
+    key_name (name, sizeof name, lrb, i);
+    print_count (solver, prefix, name, fb->differ.differ[i]);
+  }
+}
+
+static const char *const split_names[2] = {"ast", "prop"};
+
+// M1, M2 and M3 on the VSIDS and CHB lines, as before Phase 4.  M2's and
+// M3's picks still open at the end are those pending, and every pick is an
+// outcome or open; M3's outcomes by age, by count and by the bin of 'Y_v'
+// are the same, and its uniform outcomes crossed with stale against recent
+// are its uniform outcomes by that bin (checked in assertion builds).
+
+static void print_measurements (kissat *solver, const char *snapshot) {
   const feedback *const fb = &solver->policy.feedback;
   const bool chb = fb->started ? fb->chb : kissat_chb (solver);
   const char *const line = chb ? "chb" : "vsids";
@@ -1193,8 +2231,8 @@ void kissat_print_feedback_statistics (kissat *solver) {
     }
   }
   char prefix[96], name[32];
-  kissat_section (solver, "feedback");
-  snprintf (prefix, sizeof prefix, "feedback-%s-", line);
+  kissat_section (solver, *snapshot ? "feedback snapshot" : "feedback");
+  snprintf (prefix, sizeof prefix, "%sfeedback-%s-", snapshot, line);
   for (unsigned c = 0; c < 2; c++) {
     snprintf (name, sizeof name, "%s-%s", chb ? "payments" : "intervals",
               class_names[c]);
@@ -1209,86 +2247,230 @@ void kissat_print_feedback_statistics (kissat *solver) {
       }
     print_count (solver, prefix, "bumps-unobserved", fb->m1.unobserved);
   }
-  snprintf (prefix, sizeof prefix, "feedback-m1-%s-", line);
+  snprintf (prefix, sizeof prefix, "%sfeedback-m1-%s-", snapshot, line);
   print_count (solver, prefix, "events", fb->m1.events);
   if (!chb)
     print_count (solver, prefix, "events-k0", fb->m1.zero);
   for (unsigned g = 0; g < FEEDBACK_GROUPS; g++) {
-    snprintf (prefix, sizeof prefix, "feedback-m1-%s-%s", line,
+    snprintf (prefix, sizeof prefix, "%sfeedback-m1-%s-%s", snapshot, line,
               group_names[g]);
     print_sums (solver, prefix, fb->m1.group + g, chb, false,
                 group_mask[chb][g]);
   }
   for (unsigned d = 0; d < 2; d++)
     for (unsigned i = 0; i < FEEDBACK_BINS; i++) {
-      snprintf (prefix, sizeof prefix, "feedback-m1-%s-calibration-%s-%u-",
+      snprintf (prefix, sizeof prefix, "%sfeedback-m1-%s-calibration-%s-%u-", snapshot,
                 line, class_names[d], i);
       print_sums (solver, prefix, &fb->m1.calibration[d][i], chb, false, 0);
     }
   for (unsigned kind = 0; kind < FEEDBACK_KINDS; kind++) {
-    snprintf (prefix, sizeof prefix, "feedback-m2-%s-%s-", line,
+    snprintf (prefix, sizeof prefix, "%sfeedback-m2-%s-%s-", snapshot, line,
               kind_names[kind]);
     print_count (solver, prefix, "picks", fb->m2.picks[kind]);
     print_count (solver, prefix, "open", open[kind]);
     for (unsigned i = 0; i < FEEDBACK_AGES; i++) {
-      snprintf (prefix, sizeof prefix, "feedback-m2-%s-%s-age-%s-", line,
+      snprintf (prefix, sizeof prefix, "%sfeedback-m2-%s-%s-age-%s-", snapshot, line,
                 kind_names[kind], age_names[i]);
       print_sums (solver, prefix, &fb->m2.age[kind][i], chb, true, 0);
     }
     for (unsigned i = 0; i < FEEDBACK_COUNTS; i++) {
-      snprintf (prefix, sizeof prefix, "feedback-m2-%s-%s-count-%s-", line,
+      snprintf (prefix, sizeof prefix, "%sfeedback-m2-%s-%s-count-%s-", snapshot, line,
                 kind_names[kind], count_names[i]);
       print_sums (solver, prefix, &fb->m2.count[kind][i], chb, true, 0);
     }
   }
   for (unsigned kind = 0; kind < FEEDBACK_KINDS; kind++) {
-    snprintf (prefix, sizeof prefix, "feedback-m3-%s-%s-", line,
+    snprintf (prefix, sizeof prefix, "%sfeedback-m3-%s-%s-", snapshot, line,
               kind_names[kind]);
     print_count (solver, prefix, "picks", fb->m3.picks[kind]);
     print_count (solver, prefix, "open", yielding[kind]);
     for (unsigned i = 0; i < FEEDBACK_AGES; i++) {
-      snprintf (prefix, sizeof prefix, "feedback-m3-%s-%s-age-%s-", line,
+      snprintf (prefix, sizeof prefix, "%sfeedback-m3-%s-%s-age-%s-", snapshot, line,
                 kind_names[kind], age_names[i]);
       print_yields (solver, prefix, &fb->m3.age[kind][i], chb, false);
     }
     for (unsigned i = 0; i < FEEDBACK_COUNTS; i++) {
-      snprintf (prefix, sizeof prefix, "feedback-m3-%s-%s-count-%s-", line,
+      snprintf (prefix, sizeof prefix, "%sfeedback-m3-%s-%s-count-%s-", snapshot, line,
                 kind_names[kind], count_names[i]);
       print_yields (solver, prefix, &fb->m3.count[kind][i], chb, false);
     }
     for (unsigned i = 0; i < FEEDBACK_YIELDS; i++) {
-      snprintf (prefix, sizeof prefix, "feedback-m3-%s-%s-yield-%s-", line,
+      snprintf (prefix, sizeof prefix, "%sfeedback-m3-%s-%s-yield-%s-", snapshot, line,
                 kind_names[kind], yield_names[i]);
       print_yields (solver, prefix, &fb->m3.yield[kind][i], chb, true);
     }
   }
   for (unsigned recent = 0; recent < 2; recent++)
     for (unsigned i = 0; i < FEEDBACK_YIELDS; i++) {
-      snprintf (prefix, sizeof prefix, "feedback-m3-%s-uniform-%s-yield-%s-",
+      snprintf (prefix, sizeof prefix, "%sfeedback-m3-%s-uniform-%s-yield-%s-", snapshot,
                 line, cross_names[recent], yield_names[i]);
       print_yields (solver, prefix, &fb->m3.crossed[recent][i], chb, true);
     }
-  snprintf (prefix, sizeof prefix, "feedback-m3-%s-", line);
+  snprintf (prefix, sizeof prefix, "%sfeedback-m3-%s-", snapshot, line);
   print_count (solver, prefix, "obs-levels", fb->m3.levels);
   print_count (solver, prefix, "obs-segments", fb->m3.segments);
+}
+
+// The VSIDS line's lines of the pre-check: the closed intervals and the
+// bumps of the asserted and propagated classes, the steps, the largest
+// relative difference of their sums from the implied ones over the active
+// variables, the calibration bins of p_ast and p_prop, the pre-check's
+// predictors and the differ pass.
+
+static void print_vsids_precheck (kissat *solver, const char *snapshot) {
+  const feedback *const fb = &solver->policy.feedback;
+  char prefix[96], name[48];
+  snprintf (prefix, sizeof prefix, "%sfeedback-vsids-", snapshot);
+  for (unsigned j = 0; j < 2; j++) {
+    snprintf (name, sizeof name, "intervals-%s", split_names[j]);
+    print_count (solver, prefix, name, fb->m1.intervals3[j]);
+  }
+  for (unsigned ended = 0; ended < 2; ended++)
+    for (unsigned j = 0; j < 2; j++) {
+      snprintf (name, sizeof name, "bumps-%s%s", ended ? "ended-" : "",
+                split_names[j]);
+      print_count (solver, prefix, name, fb->m1.bumps3[ended][j]);
+    }
+  print_count (solver, prefix, "steps", fb->steps);
+  double error = 0;
+  if (fb->started)
+    for (all_variables (idx)) {
+      if (!ACTIVE (idx))
+        continue;
+      for (unsigned bumps = 0; bumps < 2; bumps++) {
+        const double difference =
+            classes_difference (fb, idx, bumps, solver->scinc);
+        if (difference > error)
+          error = difference;
+      }
+    }
+  kissat_message (solver, "%sclasses-error %.3g", prefix, error);
+  for (unsigned j = 0; j < 2; j++)
+    for (unsigned i = 0; i < FEEDBACK_BINS; i++) {
+      snprintf (prefix, sizeof prefix,
+                "%sfeedback-m1-vsids-calibration-%s-%u-", snapshot,
+                split_names[j], i);
+      print_sums (solver, prefix, &fb->m1.calibration3[j][i], false, false,
+                  0);
+    }
+  print_extra (solver, snapshot, "vsids", false);
+  print_differ (solver, snapshot, "vsids", false);
+}
+
+// The LRB line: updates by class, the steps, M1 on LRB's reward (picks,
+// those still open, events, those without a conflict, the groups of the
+// CHB line and its calibration bins, those of Q_ast and Q_prop too), the
+// pre-check's predictors and the differ pass.  Picks are events plus open
+// picks (checked in assertion builds).
+
+static void print_lrb (kissat *solver, const char *snapshot) {
+  const feedback *const fb = &solver->policy.feedback;
+  uint64_t open = 0;
+  if (fb->started)
+    for (all_variables (idx))
+      open += fb->state[idx] & FEEDBACK_PENDING;
+  if (fb->m1.picks != fb->m1.events + open) {
 #ifndef NDEBUG
-  kissat_message (solver, "feedback-check-complete %" PRIu64,
-                  fb->check.complete);
-  kissat_message (solver, "feedback-check-counts %" PRIu64,
-                  fb->check.counts);
-  kissat_message (solver, "feedback-check-count-error %.3g",
-                  fb->check.error);
-  kissat_message (solver, "feedback-check-chb-counts %" PRIu64,
-                  fb->check.chb);
-  kissat_message (solver, "feedback-check-payments %" PRIu64,
-                  fb->check.payments);
-  kissat_message (solver, "feedback-check-intervals %" PRIu64,
-                  fb->check.intervals);
-  kissat_message (solver, "feedback-check-levels %" PRIu64,
-                  fb->check.steps);
-  kissat_message (solver, "feedback-check-yields %" PRIu64,
-                  fb->check.yields);
+    kissat_fatal ("feedback: LRB: %" PRIu64 " picks, %" PRIu64
+                  " events, %" PRIu64 " open",
+                  fb->m1.picks, fb->m1.events, open);
 #endif
+  }
+  char prefix[96], name[48];
+  kissat_section (solver, *snapshot ? "feedback snapshot" : "feedback");
+  snprintf (prefix, sizeof prefix, "%sfeedback-lrb-", snapshot);
+  for (unsigned c = 0; c < 2; c++) {
+    snprintf (name, sizeof name, "updates-%s", class_names[c]);
+    print_count (solver, prefix, name, fb->m1.intervals[c]);
+  }
+  for (unsigned j = 0; j < 2; j++) {
+    snprintf (name, sizeof name, "updates-%s", split_names[j]);
+    print_count (solver, prefix, name, fb->m1.intervals3[j]);
+  }
+  print_count (solver, prefix, "steps", fb->steps);
+  snprintf (prefix, sizeof prefix, "%sfeedback-m1-lrb-", snapshot);
+  print_count (solver, prefix, "picks", fb->m1.picks);
+  print_count (solver, prefix, "open", open);
+  print_count (solver, prefix, "events", fb->m1.events);
+  print_count (solver, prefix, "events-k0", fb->m1.zero);
+  for (unsigned g = 0; g < FEEDBACK_GROUPS; g++) {
+    snprintf (prefix, sizeof prefix, "%sfeedback-m1-lrb-%s", snapshot,
+              group_names[g]);
+    print_sums (solver, prefix, fb->m1.group + g, true, false,
+                group_mask[1][g]);
+  }
+  for (unsigned d = 0; d < 4; d++)
+    for (unsigned i = 0; i < FEEDBACK_BINS; i++) {
+      const char *const name = d < 2 ? class_names[d] : split_names[d - 2];
+      const feedback_sums *const sums =
+          d < 2 ? &fb->m1.calibration[d][i] : &fb->m1.calibration3[d - 2][i];
+      snprintf (prefix, sizeof prefix, "%sfeedback-m1-lrb-calibration-%s-%u-",
+                snapshot, name, i);
+      print_sums (solver, prefix, sums, true, false, 0);
+    }
+  print_extra (solver, snapshot, "lrb", true);
+  print_differ (solver, snapshot, "lrb", true);
+}
+
+// The checks of assertion builds.
+
+static void print_checks (kissat *solver, const char *snapshot) {
+#ifndef NDEBUG
+  const feedback *const fb = &solver->policy.feedback;
+  kissat_message (solver, "%sfeedback-check-complete %" PRIu64, snapshot,
+                  fb->check.complete);
+  kissat_message (solver, "%sfeedback-check-counts %" PRIu64, snapshot,
+                  fb->check.counts);
+  kissat_message (solver, "%sfeedback-check-count-error %.3g", snapshot,
+                  fb->check.error);
+  kissat_message (solver, "%sfeedback-check-chb-counts %" PRIu64, snapshot,
+                  fb->check.chb);
+  kissat_message (solver, "%sfeedback-check-payments %" PRIu64, snapshot,
+                  fb->check.payments);
+  kissat_message (solver, "%sfeedback-check-intervals %" PRIu64, snapshot,
+                  fb->check.intervals);
+  kissat_message (solver, "%sfeedback-check-levels %" PRIu64, snapshot,
+                  fb->check.steps);
+  kissat_message (solver, "%sfeedback-check-yields %" PRIu64, snapshot,
+                  fb->check.yields);
+  kissat_message (solver, "%sfeedback-check-predictors %" PRIu64, snapshot,
+                  fb->check.predictors);
+  kissat_message (solver, "%sfeedback-check-differ %" PRIu64, snapshot,
+                  fb->check.differ);
+  kissat_message (solver, "%sfeedback-check-classes %" PRIu64, snapshot,
+                  fb->check.classes);
+  kissat_message (solver, "%sfeedback-check-classes-error %.3g", snapshot,
+                  fb->check.classes_error);
+  kissat_message (solver, "%sfeedback-check-erwas %" PRIu64, snapshot,
+                  fb->check.erwas);
+#else
+  (void) solver;
+  (void) snapshot;
+#endif
+}
+
+// The 'feedback' section (see 'docs/feedback.md' for every line), each
+// line's name after the prefix 'snapshot', which is empty at the end.
+
+static void print_feedback (kissat *solver, const char *snapshot) {
+  const feedback *const fb = &solver->policy.feedback;
+  const bool chb = fb->started ? fb->chb : kissat_chb (solver);
+  const bool lrb = fb->started ? fb->lrb : kissat_lrb (solver);
+  if (lrb)
+    print_lrb (solver, snapshot);
+  else {
+    print_measurements (solver, snapshot);
+    if (!chb)
+      print_vsids_precheck (solver, snapshot);
+  }
+  print_checks (solver, snapshot);
+}
+
+#endif
+
+void kissat_print_feedback_statistics (kissat *solver) {
+#ifndef QUIET
+  print_feedback (solver, "");
 #else
   (void) solver;
 #endif

@@ -81,8 +81,7 @@ void kissat_release_lrb (kissat *solver) {
   lrb->size = 0;
 }
 
-// LRB feeds CHB's ERWA and decides by Argmax over it; feedback builds do
-// not measure it yet (see 'lrb.h').
+// LRB feeds CHB's ERWA and decides by Argmax over it (see 'lrb.h').
 
 void kissat_start_lrb (kissat *solver) {
   lrb *const lrb = &solver->policy.lrb;
@@ -101,10 +100,6 @@ void kissat_start_lrb (kissat *solver) {
       GET_OPTION (thompson) || GET_OPTION (ucb) || GET_OPTION (gammappm))
     kissat_fatal ("'lrb' decides by Argmax: 'softmax', 'perturbed', "
                   "'thompson', 'ucb' and 'gammappm' must be zero");
-#ifdef FEEDBACK
-  kissat_fatal ("feedback builds do not measure LRB's reward yet: 'lrb=1' "
-                "needs a build without '--feedback'");
-#endif
   lrb->started = true;
   lrb->boundary = LRB_NO_BOUNDARY;
 #ifndef NDEBUG
@@ -281,6 +276,9 @@ void kissat_close_lrb_interval (kissat *solver, unsigned idx,
                     idx, lrb->check.start[idx]);
 #endif
     lrb->count.ignored++;
+#ifdef FEEDBACK
+    kissat_feedback_lrb_close (solver, FEEDBACK_LRB_IGNORED, 0, 0);
+#endif
     return;
   }
   *p = LRB_CLOSED;
@@ -299,6 +297,9 @@ void kissat_close_lrb_interval (kissat *solver, unsigned idx,
   if (!interval) {
     LOG ("LRB closes the interval of %s without a conflict", LOGVAR (idx));
     lrb->count.skipped++;
+#ifdef FEEDBACK
+    kissat_feedback_lrb_close (solver, FEEDBACK_LRB_SKIPPED, 0, 0);
+#endif
     return;
   }
   const double alpha = kissat_chb_alpha (conflicts);
@@ -312,6 +313,9 @@ void kissat_close_lrb_interval (kissat *solver, unsigned idx,
     kissat_update_assigned_score (solver, idx, new_q);
   else
     kissat_update_score (solver, idx, new_q);
+#ifdef FEEDBACK
+  kissat_feedback_lrb_close (solver, FEEDBACK_LRB_PAID, reward, alpha);
+#endif
 }
 
 void kissat_print_lrb_statistics (kissat *solver) {

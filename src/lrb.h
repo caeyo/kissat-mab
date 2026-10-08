@@ -58,9 +58,9 @@
 //
 // Excluded, fatal at the start of the search: 'lrb' without 'chb=1', and
 // with 'softmax', 'perturbed', 'thompson', 'ucb' or 'gammappm', so that
-// the policy is Argmax; and in feedback builds, until they measure LRB's
-// reward (research plan, Phase 4, Engineering, the feedback build's
-// additions).
+// the policy is Argmax.  Feedback builds measure the reward (see
+// 'feedback.h'): every close tells them what it did
+// ('kissat_feedback_lrb_close').
 //
 // Assertion builds check every close against a shadow log of their own:
 // per variable the participations and reason-side participations ever

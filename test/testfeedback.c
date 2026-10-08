@@ -10,6 +10,7 @@
 #include "test.h"
 
 #include <math.h>
+#include <unistd.h>
 
 #if defined(FEEDBACK) && !defined(NOPTIONS)
 
@@ -900,6 +901,687 @@ static void test_feedback_yield_search (void) {
   kissat_release (solver);
 }
 
+// Phase 4's pre-check (see 'feedback.h').  A pending pick's record.
+
+static const feedback_record *record_of (const feedback *fb, unsigned idx) {
+  assert (fb->slot[idx]);
+  return &PEEK_STACK (fb->records, fb->slot[idx] - 1);
+}
+
+static bool undefined (double p) { return isnan (p); }
+
+// The three classes on the VSIDS line: decided 0 and 2 propagate 1 and 3;
+// a step's backtrack ends the intervals of 2 and 3, and 3 is asserted
+// again at level 1, marked as conflict analysis marks it ('learn.c'), and
+// bumped in the step's round, which falls in its ended, propagated
+// interval; its new interval is asserted.  The closed intervals and the
+// bumps by class, the rounds and bumps of the asserted and propagated
+// sums, which add up to the implied ones, and the sums of E_w.
+
+static void test_feedback_classes (void) {
+  kissat *solver = new_solver (6, 0, 0, 0, 0);
+  const feedback *const fb = &solver->policy.feedback;
+  const intervals *const intervals = &solver->policy.intervals;
+  expected e;
+  memset (&e, 0, sizeof e);
+  kissat_internal_assume (solver, LIT (0));
+  imply (solver, 1);
+  kissat_internal_assume (solver, LIT (2));
+  imply (solver, 3);
+  const double inc1 = solver->scinc;
+  bump_round (solver, &e, (unsigned[]){1, 3}, 2);
+  begin_step (solver, &e);
+  backtrack (solver, &e, 1);
+  assert (fb->steps == 1);
+  assert (fb->unassigned[2] == 1 && fb->unassigned[3] == 1);
+  imply (solver, 3);
+  kissat_policy_asserted (solver, LIT (3));
+  const double inc2 = solver->scinc;
+  bump_round (solver, &e, (unsigned[]){3, 2, 0}, 3);
+  end_step (solver, &e);
+  assert (intervals->state[3] & INTERVALS_OPEN);
+  assert ((intervals->state[3] & INTERVALS_CLASS) == INTERVALS_ASSERTED);
+  const double inc3 = solver->scinc;
+  bump_round (solver, &e, (unsigned[]){3}, 1);
+  const double inc4 = solver->scinc;
+  backtrack (solver, &e, 0);
+  check_sums (solver, &e, 6);
+  // 'u' of the differ pass's locality key: the steps at the last
+  // stable-mode unassignment, taken at the backtrack, before a step's round.
+  assert (fb->steps == 3 && solver->estimator.rounds == 3);
+  assert (fb->unassigned[0] == 3 && fb->unassigned[1] == 3);
+  assert (fb->unassigned[2] == 1 && fb->unassigned[3] == 3);
+  assert (!fb->unassigned[4]);
+  assert (fb->m1.intervals[FEEDBACK_DEC] == 2);
+  assert (fb->m1.intervals[FEEDBACK_IMP] == 3);
+  assert (fb->m1.intervals3[FEEDBACK_AST] == 1);
+  assert (fb->m1.intervals3[FEEDBACK_PROP] == 2);
+  assert (fb->m1.bumps3[0][FEEDBACK_PROP] == 2);
+  assert (fb->m1.bumps3[1][FEEDBACK_PROP] == 1);
+  assert (fb->m1.bumps3[0][FEEDBACK_AST] == 1);
+  assert (!fb->m1.bumps3[1][FEEDBACK_AST]);
+  const feedback_classes *const c1 = fb->classes + 1;
+  const feedback_classes *const c3 = fb->classes + 3;
+  assert (near (c3->n[FEEDBACK_PROP], inc1 + inc2));
+  assert (near (c3->r[FEEDBACK_PROP], inc1 + inc2));
+  assert (near (c3->n[FEEDBACK_AST], inc3));
+  assert (near (c3->r[FEEDBACK_AST], inc3));
+  assert (near (c1->n[FEEDBACK_PROP], inc1 + inc2 + inc3));
+  assert (near (c1->r[FEEDBACK_PROP], inc1));
+  assert (!c1->n[FEEDBACK_AST] && !c1->r[FEEDBACK_AST]);
+  for (unsigned idx = 0; idx < 6; idx++) {
+    const feedback_classes *const c = fb->classes + idx;
+    assert (near (c->n[0] + c->n[1], fb->n[FEEDBACK_IMP][idx]));
+    assert (near (c->r[0] + c->r[1], fb->r[FEEDBACK_IMP][idx]));
+  }
+  // E_w's sums: per interval with k >= 1 the increment at its close times
+  // b / k, and the increment.  The step's ended intervals close after its
+  // round (increment 'inc3'), the others at the last backtrack ('inc4').
+  assert (near (c3->rates[FEEDBACK_IMP], inc3 + inc4));
+  assert (near (c3->weights[FEEDBACK_IMP], inc3 + inc4));
+  assert (near (c1->rates[FEEDBACK_IMP], inc4 / 3));
+  assert (near (c1->weights[FEEDBACK_IMP], inc4));
+  assert (near (fb->classes[0].rates[FEEDBACK_DEC], inc4 / 3));
+  assert (near (fb->classes[0].weights[FEEDBACK_DEC], inc4));
+  assert (near (fb->classes[2].rates[FEEDBACK_DEC], inc3 / 2));
+  assert (near (fb->classes[2].weights[FEEDBACK_DEC], inc3));
+  assert (!fb->classes[2].weights[FEEDBACK_IMP]);
+  kissat_release (solver);
+}
+
+// A pick of 'idx', which the test makes the largest score, and the record
+// of its predictors.
+
+static const feedback_record *pick (kissat *solver, unsigned idx) {
+  kissat_update_score (solver, idx, 2 * kissat_max_score (solver) + 1);
+  kissat_decide (solver);
+  assert (LEVEL (LIT (idx)) == solver->level);
+  assert (solver->assigned[idx].reason == DECISION_REASON);
+  return record_of (&solver->policy.feedback, idx);
+}
+
+// A variable's sums of rounds and bumps by class, written directly.
+
+static void write_sums (kissat *solver, unsigned idx, double n_dec,
+                        double r_dec, double n_ast, double r_ast,
+                        double n_prop, double r_prop) {
+  feedback *const fb = &solver->policy.feedback;
+  fb->n[FEEDBACK_DEC][idx] = n_dec, fb->r[FEEDBACK_DEC][idx] = r_dec;
+  fb->n[FEEDBACK_IMP][idx] = n_ast + n_prop;
+  fb->r[FEEDBACK_IMP][idx] = r_ast + r_prop;
+  feedback_classes *const c = fb->classes + idx;
+  c->n[FEEDBACK_AST] = n_ast, c->r[FEEDBACK_AST] = r_ast;
+  c->n[FEEDBACK_PROP] = n_prop, c->r[FEEDBACK_PROP] = r_prop;
+}
+
+// An event of the pick of 'idx' with 'k' rounds, 'b' of them with a bump
+// of 'idx' (the first ones), then its close.
+
+static void event (kissat *solver, expected *e, unsigned idx, unsigned k,
+                   unsigned b) {
+  for (unsigned round = 0; round < k; round++)
+    bump_round (solver, e, (unsigned[]){round < b ? idx : idx + 1}, 1);
+  backtrack (solver, e, 0);
+}
+
+static const double weights2[FEEDBACK_WEIGHTS] = {0.25, 0.5, 2, 4};
+static const double weights_w[FEEDBACK_GRID_W] = {0.25, 0.5, 1, 2, 4};
+static const double weights_a[FEEDBACK_GRID_A] = {0, 0.5, 2, 4};
+
+// The VSIDS line's predictors by their definitions, from sums written
+// here: variable 3 with N_dec 4, R_dec 1, N_ast 2, R_ast 2, N_prop 8,
+// R_prop 2 (N_imp 10, R_imp 4) and the sums of E_w, picked in the main
+// group, and variable 2 observed only as asserted, picked in the group
+// without p_dec, where p_{w,0} is undefined.  Their events score every
+// defined predictor, p_ast and p_prop join their calibration bins, and the
+// yield predictors, without a cell yet, are undefined and score nothing.
+
+static void test_feedback_precheck_vsids (void) {
+  kissat *solver = new_solver (6, 0, 0, 0, 0);
+  feedback *const fb = &solver->policy.feedback;
+  expected e;
+  memset (&e, 0, sizeof e);
+  // A first event, without p_const, has the pre-check's predictors (p_ast
+  // here) but scores none.
+  write_sums (solver, 4, 0, 0, 2, 1, 0, 0);
+  pick (solver, 4);
+  event (solver, &e, 4, 1, 1);
+  assert (fb->m1.group[FEEDBACK_GROUP_NO_CONST].n == 1);
+  for (unsigned g = 0; g < FEEDBACK_GROUP_NO_CONST; g++)
+    for (unsigned i = 0; i < FEEDBACK_V_PREDICTORS; i++)
+      assert (!fb->m1.extra[g].n[i]);
+  fb->m1.sum_k = 10, fb->m1.sum_b = 3;
+  write_sums (solver, 3, 4, 1, 2, 2, 8, 2);
+  feedback_classes *const c = fb->classes + 3;
+  c->rates[FEEDBACK_DEC] = 0.5, c->weights[FEEDBACK_DEC] = 2;
+  c->rates[FEEDBACK_IMP] = 3, c->weights[FEEDBACK_IMP] = 4;
+  const feedback_record *record = pick (solver, 3);
+  const double *v = record->extra;
+  assert (v[FEEDBACK_V_AST] == 1);
+  assert (v[FEEDBACK_V_PROP] == 0.25);
+  double expected_v[FEEDBACK_V_PREDICTORS];
+  expected_v[FEEDBACK_V_AST] = 1, expected_v[FEEDBACK_V_PROP] = 0.25;
+  for (unsigned i = 0; i < FEEDBACK_WEIGHTS; i++) {
+    const double w = weights2[i];
+    expected_v[FEEDBACK_V_W + i] = (1 + 4 * w) / (4 + 10 * w);
+    assert (near (v[FEEDBACK_V_W + i], expected_v[FEEDBACK_V_W + i]));
+  }
+  for (unsigned i = 0; i < FEEDBACK_GRID_W; i++)
+    for (unsigned j = 0; j < FEEDBACK_GRID_A; j++) {
+      const double w = weights_w[i], a = weights_a[j];
+      const unsigned k = FEEDBACK_V_GRID + FEEDBACK_GRID_A * i + j;
+      expected_v[k] = (1 + 2 * a + 2 * w) / (4 + 2 * a + 8 * w);
+      assert (near (v[k], expected_v[k]));
+    }
+  expected_v[FEEDBACK_V_MEAN] = 0.25;
+  expected_v[FEEDBACK_V_MEAN + 1] = 3.5 / 6;
+  expected_v[FEEDBACK_V_MEAN + 2] = 0.75;
+  for (unsigned i = 0; i < 3; i++)
+    assert (near (v[FEEDBACK_V_MEAN + i], expected_v[FEEDBACK_V_MEAN + i]));
+  for (unsigned i = 0; i < 4; i++)
+    assert (undefined (v[FEEDBACK_V_BIN + i]));
+  assert (record->bin_y == FEEDBACK_YIELD_NONE);
+  assert (record->bin_p == (unsigned) (10 * (5.0 / 14)));
+  // Its event: two rounds, one of them with a bump of 3.
+  event (solver, &e, 3, 2, 1);
+  const feedback_extra *const both = fb->m1.extra + FEEDBACK_GROUP_BOTH;
+  assert (fb->m1.group[FEEDBACK_GROUP_BOTH].n == 1);
+  for (unsigned i = 0; i < FEEDBACK_V_BIN; i++) {
+    const double p = expected_v[i];
+    assert (both->n[i] == 1);
+    assert (near (both->round[i], round_error (p, 2, 1)));
+    assert (near (both->interval[i], interval_error (p, 2, 1)));
+  }
+  for (unsigned i = FEEDBACK_V_BIN; i < FEEDBACK_V_PREDICTORS; i++)
+    assert (!both->n[i] && !both->interval[i]);
+  assert (fb->m1.calibration3[FEEDBACK_AST][9].n == 1);
+  assert (fb->m1.calibration3[FEEDBACK_AST][9].k == 2);
+  assert (fb->m1.calibration3[FEEDBACK_PROP][2].b == 1);
+  assert (!fb->slot[3]);
+  // Variable 2, observed only as asserted (N_ast 3, R_ast 1).
+  write_sums (solver, 2, 0, 0, 3, 1, 0, 0);
+  record = pick (solver, 2);
+  v = record->extra;
+  assert (near (v[FEEDBACK_V_AST], 1.0 / 3));
+  assert (undefined (v[FEEDBACK_V_PROP]));
+  for (unsigned i = 0; i < FEEDBACK_WEIGHTS; i++)
+    assert (near (v[FEEDBACK_V_W + i], 1.0 / 3));
+  for (unsigned i = 0; i < FEEDBACK_GRID; i++) {
+    const double a = weights_a[i % FEEDBACK_GRID_A];
+    if (a)
+      assert (near (v[FEEDBACK_V_GRID + i], 1.0 / 3));
+    else
+      assert (undefined (v[FEEDBACK_V_GRID + i]));
+  }
+  for (unsigned i = 0; i < 3; i++)
+    assert (undefined (v[FEEDBACK_V_MEAN + i]));
+  event (solver, &e, 2, 1, 1);
+  const feedback_extra *const no_dec = fb->m1.extra + FEEDBACK_GROUP_NO_DEC;
+  assert (fb->m1.group[FEEDBACK_GROUP_NO_DEC].n == 1);
+  assert (no_dec->n[FEEDBACK_V_AST] == 1 && !no_dec->n[FEEDBACK_V_PROP]);
+  assert (near (no_dec->interval[FEEDBACK_V_AST], 4.0 / 9));
+  for (unsigned i = 0; i < FEEDBACK_GRID; i++)
+    assert (no_dec->n[FEEDBACK_V_GRID + i] ==
+            (weights_a[i % FEEDBACK_GRID_A] > 0));
+  assert (!no_dec->n[FEEDBACK_V_MEAN] && !no_dec->n[FEEDBACK_V_MEAN + 2]);
+  for (unsigned j = 0; j < 2; j++) {
+    uint64_t binned = 0;
+    for (unsigned i = 0; i < FEEDBACK_BINS; i++)
+      binned += fb->m1.calibration3[j][i].n;
+    assert (binned == 1);
+  }
+  kissat_release (solver);
+}
+
+// The yield predictors: the mean rate b / k of the events closed before
+// the pick in its bin of 'Y_v' (written here), its tenth of p_1 and both.
+// Two picks of the cell made before either closes find it empty; a third
+// finds both events; one in another bin of 'Y_v' finds its cell empty and
+// leaves all three undefined.  Only defined, they score the event, with
+// p_1 beside them.
+
+static void test_feedback_precheck_bins (void) {
+  kissat *solver = new_solver (8, 0, 0, 0, 0);
+  feedback *const fb = &solver->policy.feedback;
+  expected e;
+  memset (&e, 0, sizeof e);
+  fb->m1.sum_k = 1, fb->m1.sum_b = 1;
+  // p_1 = 0.25 (bin 2) and Y_v in [1, 2) for 3 and 4.
+  for (unsigned idx = 3; idx <= 4; idx++) {
+    write_sums (solver, idx, 4, 1, 0, 0, 0, 0);
+    fb->yield[idx] = 1.5;
+  }
+  const feedback_record *record = pick (solver, 3);
+  assert (record->bin_y == FEEDBACK_YIELD_BELOW2 && record->bin_p == 2);
+  assert (undefined (record->extra[FEEDBACK_V_BIN]));
+  record = pick (solver, 4);
+  assert (undefined (record->extra[FEEDBACK_V_BIN + 2]));
+  // 4's interval: two rounds, the first bumped (rate 1/2), then 3's: three
+  // rounds, all bumped (rate 1).
+  bump_round (solver, &e, (unsigned[]){3, 4}, 2);
+  bump_round (solver, &e, (unsigned[]){3}, 1);
+  backtrack (solver, &e, 1);
+  bump_round (solver, &e, (unsigned[]){3}, 1);
+  backtrack (solver, &e, 0);
+  const feedback_cells *const cells = &fb->m1.cells;
+  assert (cells->n_y[FEEDBACK_YIELD_BELOW2] == 2);
+  assert (cells->y[FEEDBACK_YIELD_BELOW2] == 1.5);
+  assert (cells->n_p[2] == 2 && cells->n_yp[FEEDBACK_YIELD_BELOW2][2] == 2);
+  const feedback_extra *const no_imp = fb->m1.extra + FEEDBACK_GROUP_NO_IMP;
+  for (unsigned i = FEEDBACK_V_BIN; i < FEEDBACK_V_PREDICTORS; i++)
+    assert (!no_imp->n[i]);
+  // A third pick of the cell finds both events: the mean rate 3/4.
+  write_sums (solver, 5, 4, 1, 0, 0, 0, 0);
+  fb->yield[5] = 1.25;
+  record = pick (solver, 5);
+  for (unsigned i = 0; i < 3; i++)
+    assert (record->extra[FEEDBACK_V_BIN + i] == 0.75);
+  assert (record->extra[FEEDBACK_V_BIN + 3] == 0.25);
+  event (solver, &e, 5, 4, 1);
+  for (unsigned i = FEEDBACK_V_BIN; i < FEEDBACK_V_PREDICTORS; i++)
+    assert (no_imp->n[i] == 1);
+  assert (near (no_imp->interval[FEEDBACK_V_BIN], 0.25));
+  assert (near (no_imp->interval[FEEDBACK_V_BIN + 3], 0));
+  // A pick in another bin of 'Y_v' ([4, 16)) with the same p_1.
+  write_sums (solver, 6, 4, 1, 0, 0, 0, 0);
+  fb->yield[6] = 5;
+  record = pick (solver, 6);
+  for (unsigned i = 0; i < 4; i++)
+    assert (undefined (record->extra[FEEDBACK_V_BIN + i]));
+  event (solver, &e, 6, 1, 1);
+  assert (no_imp->n[FEEDBACK_V_BIN] == 1);
+  assert (cells->n_p[2] == 4 && cells->n_y[FEEDBACK_YIELD_BELOW16] == 1);
+  kissat_release (solver);
+}
+
+// What LRB's close of an interval of 'idx', of class 'c', that paid
+// 'reward' at step size 'alpha' tells the feedback build, with LRB's own
+// update of Q, as 'kissat_close_lrb_interval' makes them.
+
+static void lrb_paid (kissat *solver, unsigned idx, unsigned c,
+                      double reward, double alpha) {
+  const double q =
+      (1 - alpha) * kissat_get_score (solver, idx) + alpha * reward;
+  if (VALUE (LIT (idx)))
+    kissat_update_assigned_score (solver, idx, q);
+  else
+    kissat_update_score (solver, idx, q);
+  kissat_feedback_lrb_close (solver, FEEDBACK_LRB_PAID, reward, alpha);
+  kissat_close_feedback_interval (solver, idx, c);
+}
+
+// A calibration bin by its definition: the tenth, the last for 0.9 on.
+
+static unsigned tenth (double p) {
+  const double tenths = 10 * p;
+  return tenths < 9 ? (unsigned) tenths : 9;
+}
+
+// The step of an update of class 'c' to Q_w and to Q_{w,a} by the
+// definitions: alpha min (1, w) implied, alpha min (1, 1/w) decided, and
+// alpha w_c / max (1, w, a).
+
+static double step_w (double alpha, unsigned c, double w) {
+  if (c == INTERVALS_DECIDED)
+    return alpha * (w > 1 ? 1 / w : 1);
+  return alpha * (w < 1 ? w : 1);
+}
+
+static double step_grid (double alpha, unsigned c, double w, double a) {
+  const double largest = fmax (1, fmax (w, a));
+  const double weight = c == INTERVALS_DECIDED   ? 1
+                        : c == INTERVALS_ASSERTED ? a
+                                                  : w;
+  return alpha * weight / largest;
+}
+
+// The LRB line's ERWAs and predictors by their definitions: variable 3
+// updated by a decided, an asserted and a propagated interval, then picked
+// in the main group and its decided interval paid; variable 2 updated only
+// by asserted intervals, picked in the group without Q_dec, where the
+// Q_{w,0} are undefined; a pick whose interval spans no conflict, counted
+// apart, and one whose interval the walk did not open, taken back.
+
+static void test_feedback_precheck_lrb (void) {
+  kissat *solver = new_solver (6, "chb", 1, "lrb", 1);
+  feedback *const fb = &solver->policy.feedback;
+  assert (fb->started && fb->lrb && fb->chb);
+  const unsigned classes[3] = {INTERVALS_DECIDED, INTERVALS_ASSERTED,
+                               INTERVALS_PROPAGATED};
+  const double rewards[3] = {0.5, 1, 0.25}, alphas[3] = {0.4, 0.3, 0.2};
+  double q[4] = {0, 0, 0, 0}, qw[FEEDBACK_WEIGHTS] = {0};
+  double grid[FEEDBACK_GRID] = {0};
+  for (unsigned u = 0; u < 3; u++) {
+    const unsigned c = classes[u];
+    const double r = rewards[u], alpha = alphas[u];
+    lrb_paid (solver, 3, c, r, alpha);
+    q[c] = (1 - alpha) * q[c] + alpha * r;
+    if (c != INTERVALS_DECIDED)
+      q[FEEDBACK_Q_IMP] = (1 - alpha) * q[FEEDBACK_Q_IMP] + alpha * r;
+    for (unsigned i = 0; i < FEEDBACK_WEIGHTS; i++) {
+      const double s = step_w (alpha, c, weights2[i]);
+      qw[i] = (1 - s) * qw[i] + s * r;
+    }
+    for (unsigned i = 0; i < FEEDBACK_GRID; i++) {
+      const double s = step_grid (alpha, c, weights_w[i / FEEDBACK_GRID_A],
+                                  weights_a[i % FEEDBACK_GRID_A]);
+      grid[i] = (1 - s) * grid[i] + s * r;
+    }
+  }
+  const feedback_erwas *const e3 = fb->erwas + 3;
+  assert (near (q[FEEDBACK_Q_DEC], 0.2) && near (q[FEEDBACK_Q_AST], 0.3));
+  assert (near (q[FEEDBACK_Q_PROP], 0.05) && near (q[FEEDBACK_Q_IMP], 0.29));
+  for (unsigned i = 0; i < 4; i++)
+    assert (near (e3->q[i], q[i]));
+  for (unsigned i = 0; i < FEEDBACK_WEIGHTS; i++)
+    assert (near (e3->w[i], qw[i]));
+  for (unsigned i = 0; i < FEEDBACK_GRID; i++)
+    assert (near (e3->grid[i], grid[i]));
+  assert (e3->updates[0] == 1 && e3->updates[1] == 1 && e3->updates[2] == 1);
+  assert (near (kissat_get_score (solver, 3), 0.402));
+  assert (fb->m1.intervals[FEEDBACK_DEC] == 1);
+  assert (fb->m1.intervals[FEEDBACK_IMP] == 2);
+  assert (fb->m1.intervals3[FEEDBACK_AST] == 1);
+  assert (fb->m1.intervals3[FEEDBACK_PROP] == 1);
+  assert (fb->m1.sum_n == 1 && fb->m1.sum_r == 0.5);
+  // The pick of 3 freezes every predictor, all defined.
+  kissat_decide (solver);
+  assert (IDX (PEEK_ARRAY (solver->trail, 0)) == 3);
+  assert (fb->m1.picks == 1 && fb->state[3] == FEEDBACK_PENDING);
+  const feedback_record *record = record_of (fb, 3);
+  const double *p = record->base;
+  assert (p[FEEDBACK_PREDICT_DEC] == e3->q[FEEDBACK_Q_DEC]);
+  assert (p[FEEDBACK_PREDICT_IMP] == e3->q[FEEDBACK_Q_IMP]);
+  assert (p[FEEDBACK_PREDICT_ALL] == kissat_get_score (solver, 3));
+  assert (p[FEEDBACK_PREDICT_CONST] == 0.5);
+  const double *v = record->extra;
+  assert (v[FEEDBACK_L_AST] == e3->q[FEEDBACK_Q_AST]);
+  assert (v[FEEDBACK_L_PROP] == e3->q[FEEDBACK_Q_PROP]);
+  for (unsigned i = 0; i < FEEDBACK_WEIGHTS; i++)
+    assert (v[FEEDBACK_L_W + i] == e3->w[i]);
+  for (unsigned i = 0; i < FEEDBACK_GRID; i++)
+    assert (v[FEEDBACK_L_GRID + i] == e3->grid[i]);
+  double frozen[FEEDBACK_PREDICTORS + FEEDBACK_L_PREDICTORS];
+  memcpy (frozen, p, sizeof p[0] * FEEDBACK_PREDICTORS);
+  memcpy (frozen + FEEDBACK_PREDICTORS, v,
+          sizeof v[0] * FEEDBACK_L_PREDICTORS);
+  // Its decided interval paid 0.6: an event in the main group.
+  lrb_paid (solver, 3, INTERVALS_DECIDED, 0.6, 0.1);
+  assert (!fb->state[3] && !fb->slot[3]);
+  assert (fb->m1.events == 1 && !fb->m1.zero);
+  const feedback_sums *const both = fb->m1.group + FEEDBACK_GROUP_BOTH;
+  assert (both->n == 1 && near (both->r, 0.6));
+  for (unsigned i = 0; i < FEEDBACK_PREDICTORS; i++)
+    assert (near (both->interval[i], (0.6 - frozen[i]) * (0.6 - frozen[i])));
+  const feedback_extra *const extra = fb->m1.extra + FEEDBACK_GROUP_BOTH;
+  for (unsigned i = 0; i < FEEDBACK_L_PREDICTORS; i++) {
+    const double f = frozen[FEEDBACK_PREDICTORS + i];
+    assert (extra->n[i] == 1);
+    assert (near (extra->interval[i], (0.6 - f) * (0.6 - f)));
+  }
+  assert (fb->m1.calibration[0][tenth (frozen[FEEDBACK_PREDICT_DEC])].n);
+  assert (fb->m1.calibration[1][tenth (frozen[FEEDBACK_PREDICT_IMP])].n);
+  const double q_ast = frozen[FEEDBACK_PREDICTORS + FEEDBACK_L_AST];
+  const double q_prop = frozen[FEEDBACK_PREDICTORS + FEEDBACK_L_PROP];
+  assert (fb->m1.calibration3[FEEDBACK_AST][tenth (q_ast)].n == 1);
+  assert (fb->m1.calibration3[FEEDBACK_PROP][tenth (q_prop)].n == 1);
+  assert (fb->m1.sum_n == 2 && near (fb->m1.sum_r, 1.1));
+  kissat_backtrack_without_updating_phases (solver, 0);
+  // Variable 2, updated only by an asserted interval, now the largest Q.
+  lrb_paid (solver, 2, INTERVALS_ASSERTED, 1, 0.9);
+  kissat_decide (solver);
+  assert (IDX (PEEK_ARRAY (solver->trail, 0)) == 2);
+  record = record_of (fb, 2);
+  p = record->base, v = record->extra;
+  assert (undefined (p[FEEDBACK_PREDICT_DEC]));
+  assert (p[FEEDBACK_PREDICT_IMP] == 0.9);
+  assert (v[FEEDBACK_L_AST] == 0.9 && undefined (v[FEEDBACK_L_PROP]));
+  for (unsigned i = 0; i < FEEDBACK_GRID; i++)
+    assert (undefined (v[FEEDBACK_L_GRID + i]) ==
+            !(weights_a[i % FEEDBACK_GRID_A] > 0));
+  lrb_paid (solver, 2, INTERVALS_DECIDED, 0, 0.1);
+  const feedback_extra *const no_dec = fb->m1.extra + FEEDBACK_GROUP_NO_DEC;
+  assert (fb->m1.group[FEEDBACK_GROUP_NO_DEC].n == 1);
+  assert (no_dec->n[FEEDBACK_L_AST] == 1 && !no_dec->n[FEEDBACK_L_PROP]);
+  for (unsigned i = 0; i < FEEDBACK_GRID; i++)
+    assert (no_dec->n[FEEDBACK_L_GRID + i] ==
+            (weights_a[i % FEEDBACK_GRID_A] > 0));
+  kissat_backtrack_without_updating_phases (solver, 0);
+  // A pick whose interval spans no conflict, and one whose interval the
+  // walk did not open.
+  kissat_decide (solver);
+  const unsigned picked = IDX (PEEK_ARRAY (solver->trail, 0));
+  kissat_feedback_lrb_close (solver, FEEDBACK_LRB_SKIPPED, 0, 0);
+  kissat_close_feedback_interval (solver, picked, INTERVALS_DECIDED);
+  assert (fb->m1.events == 3 && fb->m1.zero == 1);
+  for (unsigned g = 0; g < FEEDBACK_GROUPS; g++)
+    assert (fb->m1.group[g].n ==
+            (g == FEEDBACK_GROUP_BOTH || g == FEEDBACK_GROUP_NO_DEC));
+  kissat_backtrack_without_updating_phases (solver, 0);
+  kissat_decide (solver);
+  const unsigned other = IDX (PEEK_ARRAY (solver->trail, 0));
+  assert (fb->m1.picks == 4);
+  kissat_feedback_lrb_close (solver, FEEDBACK_LRB_IGNORED, 0, 0);
+  kissat_close_feedback_interval (solver, other, INTERVALS_DECIDED);
+  assert (fb->m1.picks == 3 && fb->m1.events == 3);
+  assert (!EMPTY_STACK (fb->free));
+  kissat_backtrack_without_updating_phases (solver, 0);
+  kissat_release (solver);
+}
+
+// Through the solver's own propagation and analysis on LRB's line, without
+// on-the-fly strengthening, over (-1 2) (-3 4) (-2 -4 5) (-2 -4 -5) (6 7 8
+// 9): the pick of 1 propagates 2, the pick of 3 propagates 4 and 5 and a
+// conflict, whose step learns (-4 -2), backjumps to level 1 and asserts -4,
+// which propagates -3.  The pick of 3 is an event at the step's end with
+// its reason-side participation, reward 1, and 4 and 5 update the
+// propagated ERWAs.  The pick of 5 follows (largest Q), and a restart closes
+// it without a conflict (counted apart), -4 (asserted) and -3 likewise, and
+// the pick of 1 and 2 with one.  Q_1 is LRB's Q throughout (checked in
+// assertion builds).
+
+static void test_feedback_lrb_search (void) {
+  kissat *solver = kissat_init ();
+#ifndef NDEBUG
+  kissat_set_option (solver, "check", 0);
+#endif
+  kissat_set_option (solver, "chb", 1);
+  kissat_set_option (solver, "lrb", 1);
+  kissat_set_option (solver, "otfs", 0);
+  const int clauses[][5] = {{-1, 2, 0},
+                            {-3, 4, 0},
+                            {-2, -4, 5, 0},
+                            {-2, -4, -5, 0},
+                            {6, 7, 8, 9, 0}};
+  for (unsigned i = 0; i < sizeof clauses / sizeof *clauses; i++)
+    for (const int *p = clauses[i];; p++) {
+      kissat_add (solver, *p);
+      if (!*p)
+        break;
+    }
+  solver->stable = true;
+  kissat_init_averages (solver, &AVERAGES);
+  kissat_update_scores (solver);
+  kissat_start_policy (solver);
+  const feedback *const fb = &solver->policy.feedback;
+  assert (fb->lrb);
+  kissat_decide (solver);
+  assert (PEEK_ARRAY (solver->trail, 0) == LIT (0));
+  assert (!kissat_search_propagate (solver));
+  kissat_decide (solver);
+  assert (PEEK_ARRAY (solver->trail, 2) == LIT (2));
+  clause *const conflict = kissat_search_propagate (solver);
+  assert (conflict);
+  kissat_analyze (solver, conflict);
+  assert (solver->level == 1 && VALUE (LIT (3)) < 0);
+  const double alpha = kissat_chb_alpha (1);
+  assert (fb->m1.events == 1);
+  const feedback_sums *const no_const =
+      fb->m1.group + FEEDBACK_GROUP_NO_CONST;
+  assert (no_const->n == 1 && no_const->r == 1);
+  assert (fb->m1.intervals[FEEDBACK_DEC] == 1);
+  assert (fb->m1.intervals3[FEEDBACK_PROP] == 2);
+  assert (fb->erwas[2].q[FEEDBACK_Q_DEC] == alpha);
+  assert (fb->erwas[3].q[FEEDBACK_Q_PROP] == alpha);
+  assert (fb->erwas[3].q[FEEDBACK_Q_IMP] == alpha);
+  assert (fb->erwas[4].q[FEEDBACK_Q_PROP] == alpha);
+  assert (fb->erwas[2].w[2] == alpha / 2 && fb->erwas[3].w[0] == alpha / 4);
+  assert (!kissat_search_propagate (solver));
+  assert (VALUE (LIT (2)) < 0);
+  kissat_decide (solver);
+  assert (PEEK_ARRAY (solver->trail, 4) == LIT (4));
+  const feedback_record *const record = record_of (fb, 4);
+  assert (undefined (record->base[FEEDBACK_PREDICT_DEC]));
+  assert (record->base[FEEDBACK_PREDICT_IMP] == alpha);
+  assert (record->base[FEEDBACK_PREDICT_CONST] == 1);
+  assert (!kissat_search_propagate (solver));
+  kissat_backtrack_without_updating_phases (solver, 0);
+  assert (fb->m1.picks == 3 && fb->m1.events == 3 && fb->m1.zero == 1);
+  assert (no_const->n == 2 && no_const->r == 2);
+  assert (fb->m1.intervals[FEEDBACK_DEC] == 2);
+  assert (fb->m1.intervals[FEEDBACK_IMP] == 3);
+  assert (!fb->m1.intervals3[FEEDBACK_AST]);
+  assert (fb->erwas[0].q[FEEDBACK_Q_DEC] == alpha);
+  assert (fb->m1.sum_n == 2 && fb->m1.sum_r == 2);
+  for (unsigned idx = 0; idx < 5; idx++)
+    assert (kissat_get_score (solver, idx) ==
+            fb->erwas[idx].q[FEEDBACK_Q_DEC] +
+                fb->erwas[idx].q[FEEDBACK_Q_IMP]);
+  kissat_release (solver);
+}
+
+// The differ pass on the VSIDS line, over four unassigned variables with
+// sums written here: 0 has the largest S_1 (4), 1 more implied and
+// asserted bumps (S_2, S_4, S_inf and S_{w,a} with a >= 2 pick it), a rate
+// of one, and was unassigned last, so its locality key is the largest; 2
+// has the largest interval key and 3 the largest score.  On the LRB line,
+// over ERWAs written here, the weighted keys and the locality key against
+// Q.  Ties go to the smaller index.
+
+static void test_feedback_differ (void) {
+  kissat *solver = new_solver (4, 0, 0, 0, 0);
+  feedback *fb = &solver->policy.feedback;
+  write_sums (solver, 0, 16, 4, 0, 0, 0, 0);
+  write_sums (solver, 1, 2, 1, 1, 2, 0, 0);
+  write_sums (solver, 2, 100, 0.5, 0, 0, 0, 0);
+  fb->classes[2].rates[FEEDBACK_DEC] = 10;
+  kissat_update_score (solver, 3, 1e9);
+  fb->steps = solver->estimator.rounds = 100;
+  fb->unassigned[1] = 99;
+  kissat_feedback_differ (solver);
+  assert (fb->differ.samples == 1);
+  const uint64_t *const differ = fb->differ.differ;
+  assert (!differ[FEEDBACK_KEY_W] && !differ[FEEDBACK_KEY_W + 1]);
+  assert (!differ[FEEDBACK_KEY_W + 2]);
+  assert (differ[FEEDBACK_KEY_W + 3] && differ[FEEDBACK_KEY_W + 4]);
+  assert (differ[FEEDBACK_KEY_W + 5]);
+  for (unsigned i = 0; i < FEEDBACK_GRID; i++)
+    assert (differ[FEEDBACK_KEY_GRID + i] ==
+            (weights_a[i % FEEDBACK_GRID_A] >= 2));
+  assert (differ[FEEDBACK_KEY_V_RATE] && differ[FEEDBACK_KEY_V_LOCALITY]);
+  assert (differ[FEEDBACK_KEY_V_INTERVAL] && differ[FEEDBACK_KEY_V_SCORE]);
+  // Without the recent unassignment 0's locality key is the largest.
+  fb->unassigned[1] = 0;
+  kissat_feedback_differ (solver);
+  assert (differ[FEEDBACK_KEY_V_LOCALITY] == 1);
+  // An assigned variable is not a candidate: with 0 assigned, 1 has the
+  // largest S_1, and every S_w and S_{w,a} with it.
+  uint64_t before[FEEDBACK_V_KEYS];
+  memcpy (before, differ, sizeof before);
+  kissat_internal_assume (solver, LIT (0));
+  kissat_feedback_differ (solver);
+  for (unsigned i = 0; i < FEEDBACK_KEY_V_RATE; i++)
+    assert (differ[i] == before[i]);
+  assert (fb->differ.samples == 3);
+  kissat_release (solver);
+  solver = new_solver (4, "chb", 1, "lrb", 1);
+  fb = &solver->policy.feedback;
+  kissat_update_score (solver, 0, 0.5);
+  kissat_update_score (solver, 1, 0.25);
+  fb->erwas[1].q[FEEDBACK_Q_DEC] = 0.75;
+  fb->erwas[2].q[FEEDBACK_Q_IMP] = 0.125;
+  fb->erwas[2].w[FEEDBACK_WEIGHTS - 1] = 0.9;
+  fb->erwas[1].grid[FEEDBACK_GRID - 1] = 0.6;
+  fb->steps = 50;
+  fb->unassigned[1] = 50;
+  kissat_feedback_differ (solver);
+  const uint64_t *const lrb = fb->differ.differ;
+  assert (lrb[FEEDBACK_KEY_W] && lrb[FEEDBACK_KEY_W + 5]);
+  assert (!lrb[FEEDBACK_KEY_W + 1] && lrb[FEEDBACK_KEY_W + 4]);
+  assert (lrb[FEEDBACK_KEY_GRID + FEEDBACK_GRID - 1]);
+  assert (!lrb[FEEDBACK_KEY_GRID]);
+  assert (lrb[FEEDBACK_KEY_L_LOCALITY] && !lrb[FEEDBACK_KEY_L_SCORE]);
+  kissat_release (solver);
+}
+
+#ifndef QUIET
+
+// The snapshot: before 'FEEDBACK_SNAPSHOT' conflicts nothing, then once the
+// whole section with every line under 'snapshot-', the values those of
+// the section printed at the end from the same state; on both lines.
+
+static void check_snapshot (const char *name, int value) {
+  kissat *solver = new_solver (6, name, value, name ? "lrb" : 0, 1);
+  const feedback *const fb = &solver->policy.feedback;
+  expected e;
+  memset (&e, 0, sizeof e);
+  kissat_decide (solver);
+  if (!name)
+    bump_round (solver, &e, (unsigned[]){1}, 1);
+  solver->statistics.conflicts = FEEDBACK_SNAPSHOT - 1;
+  assert (!kissat_feedback_snapshot (solver));
+  assert (!fb->snapshot);
+  fflush (stdout);
+  FILE *file = tmpfile ();
+  assert (file);
+  const int saved = dup (1);
+  assert (saved >= 0);
+  dup2 (fileno (file), 1);
+  solver->statistics.conflicts = FEEDBACK_SNAPSHOT;
+  assert (!kissat_feedback_snapshot (solver));
+  assert (fb->snapshot);
+  assert (!kissat_feedback_snapshot (solver));
+  kissat_print_feedback_statistics (solver);
+  fflush (stdout);
+  dup2 (saved, 1);
+  close (saved);
+  rewind (file);
+  char line[256];
+  unsigned sections = 0, snapshot = 0, final = 0, matched = 0;
+  static char names[2][1024][128], values[2][1024][32];
+  while (fgets (line, sizeof line, file)) {
+    if (strstr (line, "---- [ feedback snapshot ]"))
+      sections++;
+    char n[128], v[32];
+    if (sscanf (line, "c %127s %31s", n, v) != 2)
+      continue;
+    const bool snap = !strncmp (n, "snapshot-feedback-", 18);
+    if (!snap && strncmp (n, "feedback-", 9))
+      continue;
+    unsigned *const count = snap ? &snapshot : &final;
+    assert (*count < 1024);
+    strcpy (names[snap][*count], snap ? n + 9 : n);
+    strcpy (values[snap][*count], v);
+    ++*count;
+  }
+  fclose (file);
+  assert (sections == 1);
+  assert (snapshot && snapshot == final);
+  for (unsigned i = 0; i < final; i++)
+    if (!strcmp (names[0][i], names[1][i]) &&
+        !strcmp (values[0][i], values[1][i]))
+      matched++;
+  assert (matched == final);
+  kissat_release (solver);
+}
+
+static void test_feedback_snapshot (void) {
+  check_snapshot (0, 0);
+  check_snapshot ("chb", 1);
+}
+
+#endif
+
 #endif
 
 void tissat_schedule_feedback (void) {
@@ -914,5 +1596,14 @@ void tissat_schedule_feedback (void) {
   SCHEDULE_FUNCTION (test_feedback_yield_crossed);
   SCHEDULE_FUNCTION (test_feedback_yield_chb);
   SCHEDULE_FUNCTION (test_feedback_yield_search);
+  SCHEDULE_FUNCTION (test_feedback_classes);
+  SCHEDULE_FUNCTION (test_feedback_precheck_vsids);
+  SCHEDULE_FUNCTION (test_feedback_precheck_bins);
+  SCHEDULE_FUNCTION (test_feedback_precheck_lrb);
+  SCHEDULE_FUNCTION (test_feedback_lrb_search);
+  SCHEDULE_FUNCTION (test_feedback_differ);
+#ifndef QUIET
+  SCHEDULE_FUNCTION (test_feedback_snapshot);
+#endif
 #endif
 }

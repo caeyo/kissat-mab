@@ -123,6 +123,63 @@
 // pick whose propagation's end is not seen before its interval closes,
 // which only the unit tests make, is taken back.
 //
+// Phase 4's pre-check (research plan, Phase 4, Specification, part 1).
+// Three classes: an interval's class in 'intervals.h' is decided, asserted
+// (the literal a step of conflict analysis asserts) or propagated, and
+// implied is the pool of the last two, so that every line of M1, M2 and M3
+// above is what it was.  On the VSIDS line the sums 'n' and 'r' of the
+// asserted and of the propagated intervals are kept beside the implied
+// ones ('classes'), and at every close with k >= 1 the interval's rate
+// b / k, weighted by the increment then, is added to the sums of its class
+// (decided or implied) that give E_w, the decayed mean of the interval
+// rates.  At a pick the pre-check's predictors are frozen in a record of
+// their own: p_ast and p_prop; the weighted rates p_w = (R_dec + w R_imp) /
+// (N_dec + w N_imp) for w = 1/4, 1/2, 2, 4 (w = 0, 1 and infinity are
+// p_dec, p_all and p_imp); the three-class p_{w,a} = (R_dec + a R_ast + w
+// R_prop) / (N_dec + a N_ast + w N_prop) for w = 1/4, 1/2, 1, 2, 4 and a =
+// 0, 1/2, 2, 4; E_0, E_1 and E_inf (decided intervals, both, implied ones);
+// and the yield predictors, the mean b / k of the events closed before the
+// pick in the event's bin of 'Y_v' (B_Y), in its tenth of p_1 (B_p) and in
+// both (B_Yp), which are scored together, at the events where all three
+// are defined, with p_1 beside them on the same events.  Each predictor
+// scores the event in its group of M1, over the events where it is
+// defined, which are counted.
+//
+// The LRB line ('lrb=1' with 'chb=1', see 'lrb.h'): M1 on LRB's reward.
+// Per variable ERWAs, from zero with LRB's step size, of the rewards of
+// the decided, asserted, propagated and implied intervals (Q_dec, Q_ast,
+// Q_prop, Q_imp), and weighted ones fed by every class: Q_w with the step
+// alpha min (1, w) for an implied interval and alpha min (1, 1/w) for a
+// decided one (w = 1/4, 1/2, 2, 4), and Q_{w,a} with the step alpha w_c /
+// max (1, w, a), where w_dec = 1, w_prop = w and w_ast = a; Q_1 is LRB's own
+// Q.  They are updated where LRB updates Q ('kissat_feedback_lrb_close').
+// An event is the close of the decided interval of a search pick in stable
+// mode, with LRB's reward if it spanned a conflict, else it is counted
+// apart, scored against the predictors frozen at the pick: Q_dec, Q_imp,
+// LRB's Q and Q_const (the mean reward of the decided intervals closed so
+// far), in the groups and calibration bins of the CHB line, and the
+// pre-check's.  M2 and M3 do not run on the LRB line.
+//
+// The argmax-differ pass ('kissat_feedback_differ').  At every search
+// sample of the decision metrics (see 'policy.h') one pass over the
+// unassigned active variables takes the argmax, the smallest index among
+// ties, of each candidate key and counts the samples at which it differs
+// from the reference's.  VSIDS line, reference S_1 = R_dec + R_imp: S_w =
+// R_dec + w R_imp, S_{w,a} = R_dec + a R_ast + w R_prop, the rate p_1 (zero
+// without a count), the locality key S_1 lambda^(c - u), the interval key
+// (E_1's numerator) and the score, Argmax's own.  LRB line, reference LRB's
+// Q: Q_w, Q_{w,a}, Q lambda^(c - u) and the score.  Here 'c' counts the
+// stable-mode steps of conflict analysis whose variables are bumped or
+// recorded as CHB's participants (M3's conflicts, 'steps'), 'u' is 'c' at
+// the variable's last stable-mode unassignment ('unassigned'), taken at
+// the backtrack, and lambda is 'FEEDBACK_LOCALITY'; the locality key is
+// compared in logarithms.  The CHB line has no pass.
+//
+// The snapshot ('kissat_feedback_snapshot').  The first time the search
+// tests its conflict limit after 'FEEDBACK_SNAPSHOT' conflicts, the whole
+// section is printed, each line under the prefix 'snapshot-', as a run
+// with that limit would print it at its end.
+//
 // Checks in assertion builds ('-c', which '--shadow' implies).  When a step
 // of conflict analysis starts, before its backtracks, the active variables
 // on the trail are listed; after the step's bump loop each of them has the
@@ -142,7 +199,15 @@
 // counted from the trail; both shadow sums must equal 'y_prop' and 'y_obs'
 // when the pick's interval closes.  At the end picks must be outcomes plus
 // open picks, for M2 and for M3, and M3's outcomes by age, by count and by
-// the bin of 'Y_v' must agree.  A failed check is a fatal error.
+// the bin of 'Y_v' must agree.  The pre-check: at a pick every predictor is
+// computed a second time, from the per-variable sums and shadow tables of
+// the yield predictors' cells, and at the event the frozen one must equal
+// it bitwise; every 1000 picks the asserted and propagated sums must add
+// up to the implied ones to 1e-12 of one plus the implied sum, in units of
+// the increment, as UCB's counts; at every sample a second pass,
+// key by key, must find the differ pass's argmaxes; on the LRB line the
+// check keeps Q_1, which must equal LRB's Q bitwise at every update.  A
+// failed check is a fatal error.
 
 #ifdef FEEDBACK
 
@@ -224,8 +289,83 @@
 #define FEEDBACK_YIELD 512u
 #define FEEDBACK_YIELD_SHIFT 10
 
+// Phase 4's pre-check.  The implied classes of the three-class sums, the
+// snapshot's conflicts and the locality key's lambda.
+
+#define FEEDBACK_AST 0  // asserted
+#define FEEDBACK_PROP 1 // propagated
+
+#define FEEDBACK_SNAPSHOT 100000
+#define FEEDBACK_LOCALITY 0.95
+
+// The weights: the two-class w beside 0, 1 and infinity (1/4, 1/2, 2, 4),
+// and the three-class grid of w (1/4, 1/2, 1, 2, 4) by a (0, 1/2, 2, 4),
+// index w * FEEDBACK_GRID_A + a.
+
+#define FEEDBACK_WEIGHTS 4
+#define FEEDBACK_GRID_W 5
+#define FEEDBACK_GRID_A 4
+#define FEEDBACK_GRID (FEEDBACK_GRID_W * FEEDBACK_GRID_A)
+
+// The pre-check's predictors in a pending pick's record.  VSIDS line:
+// p_ast, p_prop, p_w, p_{w,a}, E_0, E_1, E_inf, B_Y, B_p, B_Yp, and p_1 on
+// the events where those three are scored.  LRB line, beside M1's four:
+// Q_ast, Q_prop, Q_w and Q_{w,a}.
+
+#define FEEDBACK_V_AST 0
+#define FEEDBACK_V_PROP 1
+#define FEEDBACK_V_W 2
+#define FEEDBACK_V_GRID (FEEDBACK_V_W + FEEDBACK_WEIGHTS)
+#define FEEDBACK_V_MEAN (FEEDBACK_V_GRID + FEEDBACK_GRID)
+#define FEEDBACK_V_BIN (FEEDBACK_V_MEAN + 3)
+#define FEEDBACK_V_PREDICTORS (FEEDBACK_V_BIN + 4)
+
+#define FEEDBACK_L_AST 0
+#define FEEDBACK_L_PROP 1
+#define FEEDBACK_L_W 2
+#define FEEDBACK_L_GRID (FEEDBACK_L_W + FEEDBACK_WEIGHTS)
+#define FEEDBACK_L_PREDICTORS (FEEDBACK_L_GRID + FEEDBACK_GRID)
+
+#define FEEDBACK_EXTRA FEEDBACK_V_PREDICTORS // the larger of the two
+
+// The LRB line's ERWAs by class.
+
+#define FEEDBACK_Q_DEC 0
+#define FEEDBACK_Q_AST 1
+#define FEEDBACK_Q_PROP 2
+#define FEEDBACK_Q_IMP 3
+
+// The differ pass's keys: S_w (VSIDS) or Q_w (LRB) for w = 0, 1/4, 1/2, 2,
+// 4 and infinity, the grid, then on the VSIDS line the rate, the locality
+// key, the interval key and the score, on the LRB line the locality key
+// and the score.
+
+#define FEEDBACK_KEY_W 0
+#define FEEDBACK_KEY_GRID 6
+#define FEEDBACK_KEY_V_RATE (FEEDBACK_KEY_GRID + FEEDBACK_GRID)
+#define FEEDBACK_KEY_V_LOCALITY (FEEDBACK_KEY_V_RATE + 1)
+#define FEEDBACK_KEY_V_INTERVAL (FEEDBACK_KEY_V_RATE + 2)
+#define FEEDBACK_KEY_V_SCORE (FEEDBACK_KEY_V_RATE + 3)
+#define FEEDBACK_V_KEYS (FEEDBACK_KEY_V_RATE + 4)
+#define FEEDBACK_KEY_L_LOCALITY (FEEDBACK_KEY_GRID + FEEDBACK_GRID)
+#define FEEDBACK_KEY_L_SCORE (FEEDBACK_KEY_L_LOCALITY + 1)
+#define FEEDBACK_L_KEYS (FEEDBACK_KEY_L_LOCALITY + 2)
+#define FEEDBACK_KEYS FEEDBACK_V_KEYS // the larger of the two
+
+// What LRB's close of an interval did ('kissat_feedback_lrb_close').
+
+#define FEEDBACK_LRB_NONE 0
+#define FEEDBACK_LRB_PAID 1    // Q updated with a reward
+#define FEEDBACK_LRB_SKIPPED 2 // no conflict in the interval, no update
+#define FEEDBACK_LRB_IGNORED 3 // an interval LRB's walk did not open
+
 typedef struct feedback_sums feedback_sums;
 typedef struct feedback_yields feedback_yields;
+typedef struct feedback_extra feedback_extra;
+typedef struct feedback_cells feedback_cells;
+typedef struct feedback_classes feedback_classes;
+typedef struct feedback_erwas feedback_erwas;
+typedef struct feedback_record feedback_record;
 typedef struct feedback feedback;
 
 // Sums over a set of events or outcomes: on the VSIDS line intervals ('k'
@@ -251,9 +391,71 @@ struct feedback_yields {
   uint64_t prop, obs;
 };
 
+// The pre-check's sums over the events of a group of M1: per predictor the
+// events where it is defined, and there its per-round and per-interval
+// errors (on the LRB line the reward's, in 'interval').
+
+struct feedback_extra {
+  uint64_t n[FEEDBACK_EXTRA];
+  double round[FEEDBACK_EXTRA];
+  double interval[FEEDBACK_EXTRA];
+};
+
+// The yield predictors' cells: the events closed with k >= 1 and the sums
+// of their rates b / k, by bin of 'Y_v' frozen at the pick, by tenth of
+// p_1, and by both.
+
+struct feedback_cells {
+  uint64_t n_y[FEEDBACK_YIELDS], n_p[FEEDBACK_BINS];
+  uint64_t n_yp[FEEDBACK_YIELDS][FEEDBACK_BINS];
+  double y[FEEDBACK_YIELDS], p[FEEDBACK_BINS];
+  double yp[FEEDBACK_YIELDS][FEEDBACK_BINS];
+};
+
+// Per variable, VSIDS line: the rounds and bumps of the asserted and of the
+// propagated intervals, and the sums of E_w by class, decided and implied,
+// all in units of the increment.
+
+struct feedback_classes {
+  double n[2], r[2];   // asserted, propagated
+  double rates[2];     // decided, implied: increment at the close b / k
+  double weights[2];   // and the increment, at closes with k >= 1
+};
+
+// Per variable, LRB line: the ERWAs and the updates by class (decided,
+// asserted, propagated).
+
+struct feedback_erwas {
+  double q[4];                // Q_dec, Q_ast, Q_prop, Q_imp
+  double w[FEEDBACK_WEIGHTS]; // Q_w
+  double grid[FEEDBACK_GRID]; // Q_{w,a}
+  unsigned updates[3];
+};
+
+// The predictors of a pending pick frozen for the pre-check: on the LRB
+// line M1's four too (on the VSIDS line those are in 'frozen'), on the
+// VSIDS line the cells of the yield predictors (a tenth of p_1, or
+// 'FEEDBACK_BINS' if p_1 is undefined).  Assertion builds compute them a
+// second time.
+
+struct feedback_record {
+  double base[FEEDBACK_PREDICTORS];
+  double extra[FEEDBACK_EXTRA];
+  unsigned bin_y, bin_p;
+#ifndef NDEBUG
+  double check_base[FEEDBACK_PREDICTORS];
+  double check_extra[FEEDBACK_EXTRA];
+  unsigned check_y, check_p;
+#endif
+};
+
+typedef STACK (feedback_record) feedback_records;
+
 struct feedback {
   bool started;      // the arrays exist (from the start of the search)
-  bool chb;          // CHB line, VSIDS line otherwise
+  bool chb;          // CHB scores (CHB or LRB line), VSIDS line otherwise
+  bool lrb;          // LRB line ('lrb=1')
+  bool snapshot;     // the snapshot was printed
   unsigned size;     // variables the arrays have room for
   double growth;     // 1/d, d the score decay
   double increment;  // CHB: the counts' own increment, as UCB's
@@ -279,18 +481,43 @@ struct feedback {
                         // variables, pairwise, added at its conflict
   uint64_t staged_levels;   // M3: their sum
   uint64_t staged_segments; // M3: the sum of their trail segments
+  uint64_t steps;        // VSIDS, LRB: stable-mode steps that bumped or
+                         // recorded participants ('c' of the locality key)
+  double log_lambda;     // the logarithm of 'FEEDBACK_LOCALITY'
+  uint64_t *unassigned;  // VSIDS, LRB: 'steps' at the last stable-mode
+                         // unassignment ('u'), zero if none
+  unsigned *slot;        // VSIDS, LRB: the pending pick's record + 1
+  feedback_classes *classes; // VSIDS: three classes and E_w's sums
+  feedback_erwas *erwas;     // LRB: the ERWAs
+  double factors[3][FEEDBACK_WEIGHTS + FEEDBACK_GRID]; // LRB: of alpha in
+                             // the steps of Q_w, Q_{w,a} by class
+  feedback_records records;  // the pending picks' frozen predictors
+  unsigneds free;            // records free for reuse
   struct {
-    uint64_t intervals[2]; // VSIDS: closed intervals by class
+    unsigned how;       // LRB: what its close of the interval just did
+    double reward;      // and with which reward
+    double alpha;       // and step size
+  } closing;
+  struct {
+    uint64_t intervals[2]; // VSIDS: closed intervals by class (LRB:
+                           // updates)
     uint64_t bumps[2][2];  // VSIDS: bumps [in an ended interval][class]
     uint64_t unobserved;   // VSIDS: bumps in no interval (unit tests)
     uint64_t sum_k;        // VSIDS: k and b summed over the closed
     uint64_t sum_b;        // decided intervals (p_const)
-    uint64_t sum_n;        // CHB: decided payments and their rewards
-    double sum_r;          // (Q_const)
-    uint64_t events;       // events (VSIDS: closed)
-    uint64_t zero;         // VSIDS: events with k = 0
+    uint64_t sum_n;        // CHB, LRB: decided payments (LRB: updates)
+    double sum_r;          // and their rewards (Q_const)
+    uint64_t events;       // events (VSIDS, LRB: closed)
+    uint64_t zero;         // VSIDS: events with k = 0 (LRB: interval 0)
     feedback_sums group[FEEDBACK_GROUPS];
     feedback_sums calibration[2][FEEDBACK_BINS]; // by p_dec, by p_imp
+    uint64_t picks;           // LRB: picks (on the other lines M2's)
+    uint64_t intervals3[2];   // VSIDS: closed intervals (LRB: updates),
+                              // asserted and propagated
+    uint64_t bumps3[2][2];    // VSIDS: bumps [ended][asserted, propagated]
+    feedback_extra extra[FEEDBACK_GROUPS - 1]; // groups but 'NO_CONST'
+    feedback_sums calibration3[2][FEEDBACK_BINS]; // by p_ast, by p_prop
+    feedback_cells cells;     // VSIDS: the yield predictors' cells
   } m1;
   struct {
     uint64_t picks[FEEDBACK_KINDS];
@@ -306,6 +533,10 @@ struct feedback {
     uint64_t levels;   // every step's additions: the levels' variables
     uint64_t segments; // and their trail segments
   } m3;
+  struct {
+    uint64_t samples;               // search samples of the metrics
+    uint64_t differ[FEEDBACK_KEYS]; // of which the key's argmax differs
+  } differ;
 #ifndef NDEBUG
   struct {
     unsigneds listed;   // VSIDS: active variables assigned at the step
@@ -325,6 +556,16 @@ struct feedback {
     unsigneds levels;     // M3: variables per level, from the trail
     uint64_t steps;       // M3: levels compared with their frames' counts
     uint64_t yields;      // M3: picks compared with the shadow sums
+    double *q1;           // LRB: Q_1, which must be LRB's Q
+    feedback_erwas *shadow; // LRB: the ERWAs, updated by the check
+    uint64_t sum_n;       // LRB: Q_const's sums, by the check
+    double sum_r;
+    feedback_cells cells; // VSIDS: the shadow tables of the cells
+    uint64_t predictors;  // events whose predictors were compared
+    uint64_t differ;      // samples whose argmaxes were compared
+    uint64_t classes;     // three-class sums compared with the implied
+    double classes_error; // the largest relative difference of those
+    uint64_t erwas;       // LRB updates whose Q_1 was compared
   } check;
 #endif
 };
@@ -383,6 +624,24 @@ void kissat_feedback_pick (struct kissat *, unsigned idx, bool uniform);
 
 void kissat_feedback_propagated (struct kissat *);
 void kissat_feedback_observe (struct kissat *);
+
+// LRB line: LRB's close of the assignment interval whose close follows
+// ('kissat_close_interval'), 'how' as 'FEEDBACK_LRB_...', with its reward
+// and step size if it paid one.
+
+void kissat_feedback_lrb_close (struct kissat *, unsigned how,
+                                double reward, double alpha);
+
+// A search sample of the decision metrics: the differ pass (VSIDS and LRB
+// lines).
+
+void kissat_feedback_differ (struct kissat *);
+
+// Where the search tests its conflict limit: prints the snapshot the first
+// time 'FEEDBACK_SNAPSHOT' conflicts are reached.  Always false, so that
+// the search goes on as without it.
+
+bool kissat_feedback_snapshot (struct kissat *);
 
 void kissat_print_feedback_statistics (struct kissat *);
 

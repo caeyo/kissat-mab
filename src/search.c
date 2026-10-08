@@ -216,6 +216,12 @@ int kissat_search (kissat *solver) {
         res = kissat_probe (solver);
       else if (kissat_eliminating (solver))
         res = kissat_eliminate (solver);
+#ifdef FEEDBACK
+      else if (kissat_feedback_snapshot (solver)) {
+        // Never taken: the snapshot is printed where a run with a conflict
+        // limit of 'FEEDBACK_SNAPSHOT' stops (see 'feedback.h').
+      }
+#endif
       else if (conflict_limit_hit (solver))
         break;
       else if (decision_limit_hit (solver))

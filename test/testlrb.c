@@ -50,8 +50,8 @@ static bool start_fails (const char *name, int value, const char *other,
 }
 
 // 'lrb' feeds CHB's ERWA and decides by Argmax: without 'chb=1', and with
-// Sample, P1, TS, UCB or mixing, the start of the search is a fatal error,
-// as it is in feedback builds, which do not measure LRB's reward yet.
+// Sample, P1, TS, UCB or mixing, the start of the search is a fatal error.
+// Feedback builds measure LRB's reward (see 'feedback.h').
 
 static void test_lrb_options (void) {
   assert (start_fails (0, 0, 0, 0));
@@ -61,16 +61,10 @@ static void test_lrb_options (void) {
   assert (start_fails ("chb", 1, "thompson", 1));
   assert (start_fails ("chb", 1, "ucb", 1));
   assert (start_fails ("chb", 1, "gammappm", 100));
-#ifdef FEEDBACK
-  assert (start_fails ("chb", 1, 0, 0));
-#else
   assert (!start_fails ("chb", 1, 0, 0));
   assert (!start_fails ("chb", 1, "randecstable", 1));
   assert (!start_fails ("chb", 1, "ucbinterval", 0));
-#endif
 }
-
-#ifndef FEEDBACK
 
 // A solver in stable mode with CHB scores and LRB, its policy started as
 // the search starts it, over
@@ -139,7 +133,8 @@ static void participate (kissat *solver, unsigned idx) {
 
 // LRB starts the assignment intervals on the CHB line with LRB's interval,
 // every interval closed, every Q zero and no pseudo-activity.  Argmax-CHB
-// starts neither.
+// starts neither, but in feedback builds, which start the intervals under
+// every policy.
 
 static void test_lrb_start (void) {
   kissat *solver = new_solver (0, 0);
@@ -167,7 +162,12 @@ static void test_lrb_start (void) {
   kissat_update_scores (solver);
   kissat_start_policy (solver);
   assert (!solver->policy.lrb.started && !solver->policy.lrb.start);
+#ifdef FEEDBACK
+  assert (solver->policy.intervals.started);
+  assert (!solver->policy.intervals.lrb);
+#else
   assert (!solver->policy.intervals.started);
+#endif
   kissat_release (solver);
 }
 
@@ -403,12 +403,9 @@ static void test_lrb_modes (void) {
 
 #endif
 
-#endif
-
 void tissat_schedule_lrb (void) {
 #if !defined(HEAPARGMAX) && !defined(NOPTIONS)
   SCHEDULE_FUNCTION (test_lrb_options);
-#ifndef FEEDBACK
   SCHEDULE_FUNCTION (test_lrb_start);
   SCHEDULE_FUNCTION (test_lrb_conflict);
   SCHEDULE_FUNCTION (test_lrb_no_reasons);
@@ -417,6 +414,5 @@ void tissat_schedule_lrb (void) {
   SCHEDULE_FUNCTION (test_lrb_kept);
   SCHEDULE_FUNCTION (test_lrb_earning_nothing);
   SCHEDULE_FUNCTION (test_lrb_modes);
-#endif
 #endif
 }

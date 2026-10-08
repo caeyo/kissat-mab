@@ -570,6 +570,20 @@ static inline void kissat_shadow_paid (kissat *solver, unsigned idx,
 
 #endif
 
+#ifdef FEEDBACK
+
+// Feedback builds: the steps at the stable-mode unassignment of 'idx', for
+// the locality key of the differ pass (see 'feedback.h'), on the VSIDS and
+// LRB lines.
+
+static inline void kissat_feedback_unassign (kissat *solver, unsigned idx) {
+  feedback *const fb = &solver->policy.feedback;
+  if (fb->unassigned)
+    fb->unassigned[idx] = fb->steps;
+}
+
+#endif
+
 // Backtracking in stable mode unassigned 'idx'.  Its assignment interval
 // closes first, or waits for the step's bump round (see 'intervals.h').
 // The tree and, with mixing, the indicator tree get it back if a draw of
@@ -584,6 +598,9 @@ static inline void kissat_policy_unassign (kissat *solver, unsigned idx) {
   heap *scores = SCORES;
   if (!kissat_heap_contains (scores, idx))
     kissat_push_heap (solver, scores, idx);
+#endif
+#ifdef FEEDBACK
+  kissat_feedback_unassign (solver, idx);
 #endif
   kissat_intervals_unassign (solver, idx);
   policy *const policy = &solver->policy;
@@ -766,6 +783,10 @@ static inline void kissat_policy_decided (kissat *solver, unsigned idx,
     return;
   metrics->since = 0;
   kissat_sample_decision (solver, idx, random);
+#ifdef FEEDBACK
+  if (!solver->warming)
+    kissat_feedback_differ (solver); // the pre-check's differ pass
+#endif
 }
 
 #endif
