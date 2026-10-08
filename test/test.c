@@ -451,6 +451,7 @@ int main (int argc, char **argv) {
   SCHEDULE (indicator);
   SCHEDULE (policy);
   SCHEDULE (keys);
+  SCHEDULE (intervals);
   SCHEDULE (feedback);
   SCHEDULE (vector);
   SCHEDULE (rank);

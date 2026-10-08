@@ -227,8 +227,7 @@ static void test_feedback_vsids_sums (void) {
   kissat_internal_assume (solver, LIT (0));
   imply (solver, 7);
   bump_round (solver, &e, (unsigned[]){0, 7}, 2);
-  kissat_leave_stable_keys (solver);
-  kissat_leave_stable_feedback (solver);
+  kissat_leave_stable_intervals (solver);
   close_expected (&e, 0, FEEDBACK_DEC), close_expected (&e, 7, FEEDBACK_IMP);
   check_sums (solver, &e, TEST_VARS);
   solver->stable = false;
@@ -382,6 +381,7 @@ static void test_feedback_vsids_steps (void) {
   kissat_update_scores (solver);
   kissat_start_policy (solver);
   const feedback *const fb = &solver->policy.feedback;
+  const intervals *const intervals = &solver->policy.intervals;
   kissat_update_score (solver, 5, 1e100);
   expected e;
   memset (&e, 0, sizeof e);
@@ -396,16 +396,17 @@ static void test_feedback_vsids_steps (void) {
   // and 5.
   begin_step (solver, &e);
   backtrack (solver, &e, 1);
-  assert (fb->deferring), assert (SIZE_STACK (fb->deferred) == 2);
+  assert (intervals->deferring);
+  assert (SIZE_STACK (intervals->deferred) == 2);
   imply (solver, 3);
   bump_round (solver, &e, (unsigned[]){3, 4, 5}, 3);
-  assert (!fb->deferring);
+  assert (!intervals->deferring);
   end_step (solver, &e);
   assert (e.bumps[1][FEEDBACK_DEC] == 1 && e.bumps[1][FEEDBACK_IMP] == 1);
   assert (fb->m1.intervals[FEEDBACK_DEC] == 1);
   assert (fb->m1.intervals[FEEDBACK_IMP] == 1);
-  assert (fb->state[3] & FEEDBACK_OPEN);
-  assert (fb->start[3] == solver->estimator.rounds);
+  assert (intervals->state[3] & INTERVALS_OPEN);
+  assert (intervals->start[3] == solver->estimator.rounds);
   check_sums (solver, &e, 6);
   // A round outside steps, then a step without a round: its backtrack
   // closes 5's interval (the pick's) and the others without a round.
@@ -737,8 +738,7 @@ static void test_feedback_yield_vsids (void) {
   kissat_decide (solver);
   imply (solver, 2);
   kissat_feedback_propagated (solver);
-  kissat_leave_stable_keys (solver);
-  kissat_leave_stable_feedback (solver);
+  kissat_leave_stable_intervals (solver);
   close_expected (&e, 5, FEEDBACK_DEC), close_expected (&e, 2, FEEDBACK_IMP);
   assert (below4->n == 2 && below4->prop == 3 && !below4->obs);
   assert (near (fb->yield[5], 0.9 * (0.9 * 3 + 0.1 * 1) + 0.1 * 2));
@@ -831,7 +831,7 @@ static void test_feedback_yield_chb (void) {
       begin_step (solver, &e);
       kissat_backtrack_without_updating_phases (solver, 0);
       x.played = 0;
-      assert (fb->state[0] & FEEDBACK_CLOSING);
+      assert (solver->policy.intervals.state[0] & INTERVALS_DEFERRED);
       if (!round)
         record (solver, 3);
       kissat_policy_end_analysis (solver);
@@ -841,8 +841,7 @@ static void test_feedback_yield_chb (void) {
       record (solver, 0);
       kissat_policy_end_analysis (solver);
       e.analyzing = false;
-      kissat_leave_stable_keys (solver);
-      kissat_leave_stable_feedback (solver);
+      kissat_leave_stable_intervals (solver);
     }
     assert (!fb->state[0]);
   }

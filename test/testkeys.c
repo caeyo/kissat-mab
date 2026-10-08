@@ -122,12 +122,19 @@ static void test_keys_options (void) {
   assert (!start_fails ("softmax", 1, "gammappm", 100));
   assert (!start_fails ("ucbinterval", 0, "thompson", 1));
   assert (!start_fails ("ucbinterval", 0, "softmax", 1));
+#ifdef FEEDBACK
+  // Feedback builds count LRB's interval only (see 'intervals.h').
+  assert (start_fails ("ucbinterval", 0, "ucb", 1));
+#else
   assert (!start_fails ("ucbinterval", 0, "ucb", 1));
+#endif
 }
 
 // Each policy keeps an unweighted tree, the arrays it needs, and its keys:
 // s * e^x on VSIDS scores, Q + x on CHB scores, with the terms of its
-// first draw point at the start of the search.
+// first draw point at the start of the search.  UCB on VSIDS scores starts
+// the assignment intervals (see 'intervals.h'), which feedback builds
+// start whatever the policy.
 
 static void check_start (kissat *solver, unsigned kind, bool chb) {
   const policy *const policy = &solver->policy;
@@ -139,7 +146,19 @@ static void check_start (kissat *solver, unsigned kind, bool chb) {
   assert (keys->size == solver->size);
   assert ((keys->normal != 0) == (kind == KEYS_THOMPSON));
   assert ((keys->count != 0) == (kind == KEYS_UCB || chb));
-  assert ((keys->opened != 0) == (kind == KEYS_UCB && !chb));
+  const bool ucb = kind == KEYS_UCB && !chb;
+  const intervals *const intervals = &policy->intervals;
+  assert (keys->intervals == ucb);
+  assert (intervals->ucb == ucb);
+#ifdef FEEDBACK
+  assert (intervals->started);
+  assert ((intervals->opened != 0) == !chb);
+#else
+  assert (intervals->started == ucb);
+  assert ((intervals->opened != 0) == ucb);
+#endif
+  if (intervals->started)
+    assert (intervals->size == solver->size);
   for (all_variables (idx)) {
     const double score = kissat_get_score (solver, idx);
     const double term = keys->term[idx];
@@ -405,7 +424,7 @@ static void test_keys_ucb_vsids (void) {
   closed[5] = true;
   check_counts (solver, expected, closed, vars);
   // Leaving stable mode closes the intervals of 1 and 4.
-  kissat_leave_stable_keys (solver);
+  kissat_leave_stable_intervals (solver);
   closed[1] = closed[4] = true;
   check_counts (solver, expected, closed, vars);
   solver->stable = false;
@@ -502,7 +521,8 @@ static void check_ucb_interval (bool interval) {
   kissat_set_option (solver, "ucbinterval", interval);
   start_solver (solver, vars);
   const keys *const keys = &solver->policy.keys;
-  assert (keys->interval == interval);
+  const intervals *const intervals = &solver->policy.intervals;
+  assert (intervals->interval == interval);
   double expected[vars] = {0};
   bool observed[vars] = {0};
   kissat_internal_assume (solver, LIT (1)), observed[1] = true;
@@ -513,13 +533,13 @@ static void check_ucb_interval (bool interval) {
   // it, and the bump round follows.
   kissat_policy_begin_analysis (solver);
   kissat_backtrack_without_updating_phases (solver, 1);
-  assert (keys->deferring == interval);
-  assert (SIZE_STACK (keys->deferred) == (interval ? 2 : 0));
+  assert (intervals->deferring == interval);
+  assert (SIZE_STACK (intervals->deferred) == (interval ? 2 : 0));
   kissat_internal_assume (solver, LIT (4));
   observed[2] = observed[3] = interval;
   observed[4] = !interval;
   bump_round (solver, expected, observed, vars);
-  assert (!keys->deferring);
+  assert (!intervals->deferring);
   kissat_policy_end_analysis (solver);
   bool closed[vars] = {0};
   closed[2] = closed[3] = true;
@@ -536,7 +556,8 @@ static void check_ucb_interval (bool interval) {
   kissat_backtrack_without_updating_phases (solver, 0);
   kissat_internal_assume (solver, LIT (5));
   kissat_policy_end_analysis (solver);
-  assert (!keys->deferring), assert (EMPTY_STACK (keys->deferred));
+  assert (!intervals->deferring);
+  assert (EMPTY_STACK (intervals->deferred));
   closed[1] = closed[4] = true;
   check_counts (solver, expected, closed, vars);
   // The literal assigned in that step counts the next round, outside steps.
@@ -551,18 +572,24 @@ static void check_ucb_interval (bool interval) {
 
 static void test_keys_ucb_interval (void) {
   check_ucb_interval (true);
-  check_ucb_interval (false);
+#ifndef FEEDBACK
+  check_ucb_interval (false); // feedback builds refuse stage 2's count
+#endif
   // LRB's interval is the default, and the option is ignored but for UCB
-  // on VSIDS scores.
+  // on VSIDS scores: on CHB scores UCB counts payments, not intervals, and
+  // every other bookkeeping of the intervals counts LRB's interval.
   kissat *solver = new_solver (4, "ucb", 1, 0, 0);
   assert (GET_OPTION (ucbinterval) == 1);
-  assert (solver->policy.keys.interval);
+  assert (solver->policy.intervals.interval);
   kissat_release (solver);
   solver = new_solver (4, "ucb", 1, "chb", 1);
-  assert (!solver->policy.keys.interval);
+  assert (!solver->policy.keys.intervals);
+  assert (solver->policy.intervals.interval ==
+          solver->policy.intervals.started);
   kissat_release (solver);
   solver = new_solver (4, "thompson", 1, "ucbinterval", 0);
-  assert (!solver->policy.keys.interval);
+  assert (solver->policy.intervals.interval ==
+          solver->policy.intervals.started);
   kissat_release (solver);
 }
 

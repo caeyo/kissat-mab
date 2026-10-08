@@ -213,19 +213,20 @@ static void compact_scores (kissat *solver, heap *old_scores,
 #ifndef HEAPARGMAX
 
 // Moves every score, last conflict (CHB) and leaf of the policy tree, with
-// mixing of the indicator tree, and under P1, TS and UCB their terms and
-// counts, to the variable's new index, as 'compact_scores' does for the
-// heap.  Indices only decrease and the loop goes up, so nothing is
-// overwritten before it is moved.  Leaves of the variables that disappear
-// are absent (they are inactive), and leaves beyond the new number of
-// variables are made absent.  Compaction may happen during the search with
-// variables assigned.  The trail keeps its positions, with its literals
-// renamed ('compact_trail'), and UCB's increments at assignment move with
-// their variables, so UCB's record of the trail stays where it is (see
-// 'keys.h'): recording the trail again from its start would give every
-// variable assigned now the current increment, and so lose the bump rounds
-// it spent assigned before.  The same holds for feedback builds, whose
-// sums, intervals and pending picks move too (see 'feedback.h').
+// mixing of the indicator tree, under P1, TS and UCB their terms and
+// counts, and the assignment intervals, to the variable's new index, as
+// 'compact_scores' does for the heap.  Indices only decrease and the loop
+// goes up, so nothing is overwritten before it is moved.  Leaves of the
+// variables that disappear are absent (they are inactive), and leaves
+// beyond the new number of variables are made absent.  Compaction may
+// happen during the search with variables assigned.  The trail keeps its
+// positions, with its literals renamed ('compact_trail'), and the
+// intervals' increments at assignment move with their variables, so their
+// record of the trail stays where it is (see 'intervals.h'): recording the
+// trail again from its start would give every variable assigned now the
+// current increment, and so lose the bump rounds it spent assigned before.
+// Feedback builds move their sums and pending picks too (see
+// 'feedback.h').
 
 static void compact_policy (kissat *solver, unsigned vars) {
   LOG ("compacting scores and policy tree");
@@ -234,6 +235,8 @@ static void compact_policy (kissat *solver, unsigned vars) {
   tree *const tree = &solver->policy.tree;
   indicator *const uniform = &solver->policy.uniform;
   keys *const keys = &solver->policy.keys;
+  intervals *const intervals = &solver->policy.intervals;
+  assert (!intervals->deferring);
   const bool mixing = uniform->enabled;
   for (all_variables (idx)) {
     const unsigned midx = map_idx (solver, idx);
@@ -249,6 +252,7 @@ static void compact_policy (kissat *solver, unsigned vars) {
     if (mixing)
       kissat_indicator_move (uniform, idx, midx);
     kissat_move_keys (keys, idx, midx);
+    kissat_move_intervals (intervals, idx, midx);
 #ifdef FEEDBACK
     kissat_move_feedback (solver, idx, midx);
 #endif
@@ -260,6 +264,7 @@ static void compact_policy (kissat *solver, unsigned vars) {
     if (mixing)
       kissat_indicator_put (uniform, idx, false);
     kissat_clear_keys (keys, idx);
+    kissat_clear_intervals (intervals, idx);
 #ifdef FEEDBACK
     kissat_clear_feedback (solver, idx);
 #endif

@@ -138,71 +138,42 @@ void kissat_activate_keys (kissat *solver, unsigned idx) {
   draw_variable (solver, idx);
 }
 
-// UCB on VSIDS scores: every variable still assigned when stable mode is
-// left adds the increments of the bump rounds since its assignment, and
-// its interval is closed.  Entering stable mode opens new ones.
+// UCB on VSIDS scores: the interval of 'idx' closes (see 'intervals.h'),
+// and its count adds the increments of the bump rounds since its
+// assignment.  At its unassignment, or after the bump round or at the end
+// of the analysis step whose backtrack ended it (LRB's interval), its term
+// follows the new count.  A close the step deferred also sets the leaf:
+// backtracking put it back with the key it had, and as no pick happens
+// inside a step it is still there unless the variable was assigned again;
+// an unassignment sets the leaf itself ('kissat_keys_unassign').  When
+// stable mode is left the term stays, as the next entry is a draw point.
 
-void kissat_leave_stable_keys (kissat *solver) {
-  keys *const keys = &solver->policy.keys;
-  if (!keys->intervals)
-    return;
-  assert (solver->stable);
-  kissat_record_keys (solver);
-  const double inc = solver->scinc;
-  const double rounds = keys->growth - 1;
-  double *const count = keys->count;
-  double *const opened = keys->opened;
-  const unsigned *const begin = BEGIN_ARRAY (solver->trail);
-  const unsigned *const end = END_ARRAY (solver->trail);
-  for (const unsigned *p = begin; p != end; p++) {
-    const unsigned idx = IDX (*p);
-    if (!ACTIVE (idx))
-      continue;
-    count[idx] += (inc - opened[idx]) / rounds;
-    opened[idx] = inc;
-  }
-}
-
-// UCB counting LRB's interval: every interval a backtrack of the current
-// analysis step ended closes now, with the increment of the step's bump
-// round if it had one, and its term follows the new count.  Backtracking
-// put the leaf back with the key it had, and as no pick happens inside a
-// step the leaf is still there unless the variable was assigned again.
-
-void kissat_finish_deferred_keys (kissat *solver) {
+void kissat_close_keys_interval (kissat *solver, unsigned idx,
+                                 unsigned how) {
   policy *const policy = &solver->policy;
   keys *const keys = &policy->keys;
-  assert (keys->interval);
-  assert (keys->deferring);
+  assert (keys->intervals);
   const double inc = solver->scinc;
-  const double rounds = keys->growth - 1;
-  double *const count = keys->count;
-  const double *const opened = keys->opened;
+  double *const count = keys->count + idx;
+  *count += (inc - policy->intervals.opened[idx]) / (keys->growth - 1);
+  if (how == INTERVALS_CLOSE_LEFT)
+    return;
+  keys->term[idx] = kissat_ucb_term (policy, *count / inc);
+  if (how != INTERVALS_CLOSE_DEFERRED)
+    return;
   tree *const tree = &policy->tree;
-  const value *const values = solver->values;
-  for (all_stack (unsigned, idx, keys->deferred)) {
-    count[idx] += (inc - opened[idx]) / rounds;
-    keys->term[idx] = kissat_ucb_term (policy, count[idx] / inc);
-    const double key = kissat_policy_key (solver, idx);
-    if (kissat_tree_contains (tree, idx)
-            ? kissat_tree_key (tree, idx) != key
-            : !values[LIT (idx)])
-      kissat_tree_set (tree, idx, key, 0);
-  }
-  CLEAR_STACK (keys->deferred);
-  keys->deferring = false;
+  const double key = kissat_policy_key (solver, idx);
+  if (kissat_tree_contains (tree, idx) ? kissat_tree_key (tree, idx) != key
+                                       : !solver->values[LIT (idx)])
+    kissat_tree_set (tree, idx, key, 0);
 }
 
 void kissat_rescale_keys (kissat *solver, double factor) {
   keys *const keys = &solver->policy.keys;
   assert (keys->intervals);
-  kissat_record_keys (solver);
   double *const count = keys->count;
-  double *const opened = keys->opened;
-  for (all_variables (idx)) {
+  for (all_variables (idx))
     count[idx] *= factor;
-    opened[idx] *= factor;
-  }
 }
 
 void kissat_rescale_chb_counts (kissat *solver) {
@@ -262,8 +233,6 @@ void kissat_resize_keys (kissat *solver, unsigned size) {
       resize_array (solver, keys->normal, normals, old_size, size);
   keys->count =
       resize_array (solver, keys->count, keys->counts, old_size, size);
-  keys->opened =
-      resize_array (solver, keys->opened, keys->intervals, old_size, size);
 #ifdef SHADOW
   keys->recount =
       resize_array (solver, keys->recount, keys->counts, old_size, size);
@@ -282,10 +251,7 @@ void kissat_release_keys (kissat *solver) {
     kissat_dealloc (solver, keys->normal, size, sizeof *keys->normal);
   if (keys->count)
     kissat_dealloc (solver, keys->count, size, sizeof *keys->count);
-  if (keys->opened)
-    kissat_dealloc (solver, keys->opened, size, sizeof *keys->opened);
-  keys->term = keys->normal = keys->count = keys->opened = 0;
-  RELEASE_STACK (keys->deferred);
+  keys->term = keys->normal = keys->count = 0;
 #ifdef SHADOW
   RELEASE_STACK (keys->observed);
   if (keys->recount)
@@ -338,7 +304,6 @@ void kissat_start_keys (kissat *solver) {
   keys->noise = perturbed || keys->factor > 0;
   keys->counts = ucb || (thompson && chb);
   keys->intervals = ucb && !chb;
-  keys->interval = keys->intervals && GET_OPTION (ucbinterval);
   const double decay = GET_OPTION (decay) * 1e-3;
   keys->growth = 1.0 / (1.0 - decay);
   keys->increment = 1;
@@ -355,11 +320,11 @@ void kissat_start_keys (kissat *solver) {
   else
     kissat_very_verbose (solver, "upper confidence bounds at c %g%s",
                          keys->factor,
-                         keys->interval ? " counting LRB's interval" : "");
-  if (solver->stable) {
-    keys->counted = 0;
+                         keys->intervals && GET_OPTION (ucbinterval)
+                             ? " counting LRB's interval"
+                             : "");
+  if (solver->stable)
     kissat_draw_keys (solver);
-  }
 }
 
 #else

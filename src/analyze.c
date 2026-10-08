@@ -128,6 +128,9 @@ static bool one_literal_on_conflict_level (kissat *solver, clause *conflict,
     const reference ref = kissat_reference_clause (solver, conflict);
     kissat_assign_reference (solver, forced_lit, ref, conflict);
   }
+#ifndef HEAPARGMAX
+  kissat_policy_asserted (solver, forced_lit); // see 'intervals.h'
+#endif
 
   return true;
 }
@@ -552,9 +555,9 @@ int kissat_analyze (kissat *solver, clause *conflict) {
   int res;
   do {
 #ifndef HEAPARGMAX
-    // A step of the analysis, for UCB's count of LRB's interval: the
-    // variables assigned now are those its bump round observes, if it has
-    // one (see 'keys.h').
+    // A step of the analysis, for LRB's interval: the variables assigned
+    // now are those its bump round observes, if it has one (see
+    // 'intervals.h').
     kissat_policy_begin_analysis (solver);
 #endif
     LOGCLS (conflict, "analyzing conflict %" PRIu64, CONFLICTS);

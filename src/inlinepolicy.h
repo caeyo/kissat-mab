@@ -78,14 +78,17 @@
 // observations for UCB and TS, and UCB recomputes a variable's term when
 // stable-mode backtracking unassigns it.
 //
-// Each step of conflict analysis is bracketed by
-// 'kissat_policy_begin_analysis' and 'kissat_policy_end_analysis'.  UCB
-// counting LRB's interval ('ucbinterval=1', see 'keys.h') defers there the
-// closes of the intervals that the step's backtracks end to the step's bump
-// round, and so do feedback builds (see 'feedback.h'), which also close a
-// variable's interval when stable-mode backtracking unassigns it outside a
-// step, rescale their sums with the scores, and keep their record of the
-// trail below its size.
+// The assignment intervals (see 'intervals.h'), which UCB on VSIDS scores
+// counts and feedback builds measure, are recorded before every
+// stable-mode backtrack, at the start of every bump round, before rescales
+// and when stable mode is left, close when stable-mode backtracking
+// unassigns their variables, keep their record of the trail below its
+// size, and are rescaled with the scores.  Each step of conflict analysis
+// is bracketed by 'kissat_policy_begin_analysis' and
+// 'kissat_policy_end_analysis', where LRB's interval defers the closes of
+// the intervals that the step's backtracks end to the step's bump round,
+// or its end, and conflict analysis marks the literal it asserts
+// ('kissat_policy_asserted').
 
 #include "chb.h"
 #include "internal.h"
@@ -320,7 +323,8 @@ static inline double kissat_max_score (kissat *solver) {
 }
 
 // UCB's counts on VSIDS scores are kept in units of the score increment,
-// and are rescaled with the scores, as are the increments at assignment.
+// and are rescaled with the scores, as are the increments at assignment of
+// the intervals and the feedback build's sums (see 'intervals.h').
 
 static inline void kissat_scale_scores (kissat *solver, double factor) {
   LOG ("rescaling scores with factor %g", factor);
@@ -330,84 +334,170 @@ static inline void kissat_scale_scores (kissat *solver, double factor) {
 #ifdef SHADOW
   kissat_rescale_heap (solver, SCORES, factor);
 #endif
-  if (solver->policy.keys.intervals)
-    kissat_rescale_keys (solver, factor);
-#ifdef FEEDBACK
-  kissat_rescale_feedback (solver, factor);
-#endif
+  if (solver->policy.intervals.started)
+    kissat_rescale_intervals (solver, factor);
   if (!solver->policy.bulk)
     kissat_rebuild_policy (solver);
 }
 
-// UCB on VSIDS scores: the literals assigned since the last record get the
-// current score increment, the one they were assigned at, since it has
-// not changed since (see 'keys.h').  Called before the increment changes,
-// before every stable-mode backtrack and when stable mode is left.  While
-// closes are deferred to the bump round of an analysis step (LRB's
-// interval), the literals assigned since the step's backtrack wait for
-// that round, which records them after it.
+// The class of the current assignment of the assigned variable 'idx' (see
+// 'intervals.h'), from its reason and its mark, whose record may be still
+// due.
 
-static inline void kissat_record_keys (kissat *solver) {
-  keys *const keys = &solver->policy.keys;
-  if (!keys->intervals || keys->deferring)
+static inline unsigned kissat_assignment_class (kissat *solver,
+                                                unsigned idx,
+                                                unsigned state) {
+  if (solver->assigned[idx].reason == DECISION_REASON)
+    return INTERVALS_DECIDED;
+  return state & INTERVALS_MARKED ? INTERVALS_ASSERTED
+                                  : INTERVALS_PROPAGATED;
+}
+
+// The active literals assigned since the last record open their intervals
+// with their class, the current score increment and the current bump
+// round, the ones they were assigned at, since neither has changed since
+// (see 'intervals.h').  Called at the start of every bump round, before
+// every stable-mode backtrack, before rescales and when stable mode is
+// left.  While closes are deferred (LRB's interval), the literals assigned
+// since the step's backtrack wait for its bump round, which records them
+// after it, or for the next record after its end.
+
+static inline void kissat_record_intervals (kissat *solver) {
+  intervals *const intervals = &solver->policy.intervals;
+  if (!intervals->started || intervals->deferring || !solver->stable)
     return;
   const unsigned size = SIZE_ARRAY (solver->trail);
-  unsigned counted = keys->counted;
+  unsigned counted = intervals->counted;
   if (counted >= size)
     return;
   const unsigned *const trail = BEGIN_ARRAY (solver->trail);
-  double *const opened = keys->opened;
+  const flags *const flags = solver->flags;
+  uint8_t *const state = intervals->state;
+  double *const opened = intervals->opened;
+  uint64_t *const start = intervals->start;
+  uint64_t *const bumps = intervals->bumps;
   const double inc = solver->scinc;
+  const uint64_t round = solver->estimator.rounds;
   while (counted < size) {
     const unsigned lit = trail[counted++];
-    opened[IDX (lit)] = inc;
+    const unsigned idx = IDX (lit);
+    if (!flags[idx].active)
+      continue;
+    const unsigned s = state[idx];
+    assert (!(s & INTERVALS_DEFERRED));
+    state[idx] = (s & INTERVALS_MARKED) | INTERVALS_OPEN |
+                 kissat_assignment_class (solver, idx, s);
+    if (opened)
+      opened[idx] = inc;
+    if (start) {
+      start[idx] = round;
+      bumps[idx] = 0;
+    }
   }
-  keys->counted = size;
+  intervals->counted = size;
 }
 
-// The trail was shrunk to 'size' literals: CHB's paid position and UCB's
-// recorded position follow it down.
+// The trail was shrunk to 'size' literals: CHB's paid position and the
+// intervals' recorded position follow it down.
 
 static inline void kissat_policy_shrink_trail (kissat *solver,
                                                unsigned size) {
   kissat_chb_shrink_trail (solver, size);
-  unsigned *const counted = &solver->policy.keys.counted;
+  unsigned *const counted = &solver->policy.intervals.counted;
   if (*counted > size)
     *counted = size;
-#ifdef FEEDBACK
-  unsigned *const recorded = &solver->policy.feedback.counted;
-  if (*recorded > size)
-    *recorded = size;
-#endif
 }
 
-// P1, TS and UCB: backtracking in stable mode unassigned 'idx'.  On VSIDS
-// scores UCB adds the increments of the bump rounds since its assignment
-// to its count, and on either line recomputes its term.  Counting LRB's
-// interval, a backtrack inside an analysis step defers both to the step's
-// bump round, or its end (see 'keys.h').  The leaf is set if a pick
-// removed it, or if its key changed: by UCB's term, or on CHB scores by
-// payments while the variable was assigned.
+// Stable-mode backtracking unassigned 'idx': its interval closes, or with
+// LRB's interval, inside an analysis step, waits for the step's bump round
+// or its end, keeping its class (see 'intervals.h').  An unassigned
+// variable without an open interval, which only the unit tests make,
+// loses its mark.
+
+static inline void kissat_intervals_unassign (kissat *solver,
+                                              unsigned idx) {
+  intervals *const intervals = &solver->policy.intervals;
+  if (!intervals->started)
+    return;
+  uint8_t *const p = intervals->state + idx;
+  const unsigned state = *p;
+  if (!(state & INTERVALS_OPEN)) {
+    *p = state & ~INTERVALS_MARKED;
+    return;
+  }
+  assert (!(state & INTERVALS_DEFERRED));
+  assert (solver->assigned[idx].trail < intervals->counted);
+  const unsigned c = state & INTERVALS_CLASS;
+  if (intervals->analyzing) {
+    *p = INTERVALS_DEFERRED | c << INTERVALS_DEFERRED_SHIFT;
+    PUSH_STACK (intervals->deferred, idx);
+    intervals->deferring = true;
+    return;
+  }
+  *p = 0;
+  kissat_close_interval (solver, idx, c, INTERVALS_CLOSE_UNASSIGNED);
+}
+
+// Conflict analysis assigned 'lit' at the end of a step, after its
+// backjump, with the learned clause, or the conflict clause it reuses as
+// the driving clause, as its reason: the literal is marked asserted, in
+// stable mode, for the record of its interval (see 'intervals.h').  A
+// learned unit is fixed at level zero and has no interval.
+
+static inline void kissat_policy_asserted (kissat *solver, unsigned lit) {
+  intervals *const intervals = &solver->policy.intervals;
+  if (!intervals->started || !solver->stable)
+    return;
+  assert (VALUE (lit) > 0);
+  const unsigned idx = IDX (lit);
+  if (!solver->assigned[idx].level)
+    return;
+  uint8_t *const state = intervals->state + idx;
+  assert (!(*state & (INTERVALS_OPEN | INTERVALS_MARKED)));
+  *state |= INTERVALS_MARKED;
+}
+
+// The interval a bump of the active variable 'idx' in the current round
+// falls in (feedback builds): the one a backtrack of this step ended, if
+// any, whose class is kept with it, since the variable may be assigned
+// again (the asserted literal); else the open one of the assigned
+// variable; else none, which only the unit tests make, bumping outside
+// analysis steps.  The interval counts the bump (b, see 'intervals.h').
+
+static inline unsigned kissat_interval_bumped (kissat *solver,
+                                               unsigned idx) {
+  intervals *const intervals = &solver->policy.intervals;
+  assert (intervals->started);
+  const unsigned state = intervals->state[idx];
+  unsigned res;
+  if (state & INTERVALS_DEFERRED)
+    res = INTERVALS_ENDED |
+          ((state >> INTERVALS_DEFERRED_SHIFT) & INTERVALS_CLASS);
+  else if (state & INTERVALS_OPEN && VALUE (LIT (idx))) {
+    assert (solver->assigned[idx].trail < intervals->counted);
+    res = state & INTERVALS_CLASS;
+  } else
+    return INTERVALS_NONE;
+  if (intervals->rounds)
+    intervals->bumps[idx]++;
+  return res;
+}
+
+// P1, TS and UCB: backtracking in stable mode unassigned 'idx'.  On CHB
+// scores UCB recomputes its term; on VSIDS scores UCB's count and term
+// follow at the close of the variable's interval, which happened before
+// this (see 'kissat_policy_unassign'), or with LRB's interval, inside an
+// analysis step, waits for the step's bump round or its end (see
+// 'intervals.h').  The leaf is set if a pick removed it, or if its key
+// changed: by UCB's term, or on CHB scores by payments while the variable
+// was assigned.
 
 static inline void kissat_keys_unassign (kissat *solver, unsigned idx) {
   policy *const policy = &solver->policy;
   keys *const keys = &policy->keys;
-  if (keys->kind == KEYS_UCB) {
-    if (policy->chb) {
-      const double inc = keys->increment;
-      keys->term[idx] = kissat_ucb_term (policy, keys->count[idx] / inc);
-    } else if (keys->analyzing) {
-      assert (keys->interval);
-      assert (solver->assigned[idx].trail < keys->counted);
-      PUSH_STACK (keys->deferred, idx);
-      keys->deferring = true;
-    } else {
-      assert (keys->intervals);
-      assert (solver->assigned[idx].trail < keys->counted);
-      const double inc = solver->scinc;
-      keys->count[idx] += (inc - keys->opened[idx]) / (keys->growth - 1);
-      keys->term[idx] = kissat_ucb_term (policy, keys->count[idx] / inc);
-    }
+  if (keys->kind == KEYS_UCB && policy->chb) {
+    const double inc = keys->increment;
+    keys->term[idx] = kissat_ucb_term (policy, keys->count[idx] / inc);
   }
   tree *const tree = &policy->tree;
   assert (!tree->weighted);
@@ -474,11 +564,13 @@ static inline void kissat_shadow_paid (kissat *solver, unsigned idx,
 
 #endif
 
-// Backtracking in stable mode unassigned 'idx'.  The tree and, with
-// mixing, the indicator tree get it back if a draw of theirs removed it.
-// Under CHB a leaf the tree kept is refreshed if it lags the score, which
-// CHB's payments changed while the variable was assigned.  P1, TS and UCB
-// compare the leaf with the variable's key instead.
+// Backtracking in stable mode unassigned 'idx'.  Its assignment interval
+// closes first, or waits for the step's bump round (see 'intervals.h').
+// The tree and, with mixing, the indicator tree get it back if a draw of
+// theirs removed it.  Under CHB a leaf the tree kept is refreshed if it
+// lags the score, which CHB's payments changed while the variable was
+// assigned.  P1, TS and UCB compare the leaf with the variable's key
+// instead.
 
 static inline void kissat_policy_unassign (kissat *solver, unsigned idx) {
   assert (!solver->policy.bulk);
@@ -487,6 +579,7 @@ static inline void kissat_policy_unassign (kissat *solver, unsigned idx) {
   if (!kissat_heap_contains (scores, idx))
     kissat_push_heap (solver, scores, idx);
 #endif
+  kissat_intervals_unassign (solver, idx);
   policy *const policy = &solver->policy;
   const tree *const tree = &policy->tree;
   if (policy->keys.kind)
@@ -498,9 +591,6 @@ static inline void kissat_policy_unassign (kissat *solver, unsigned idx) {
   indicator *const uniform = &policy->uniform;
   if (uniform->enabled && !kissat_indicator_contains (uniform, idx))
     kissat_indicator_insert (uniform, idx);
-#ifdef FEEDBACK
-  kissat_feedback_unassign (solver, idx); // closes the interval
-#endif
 }
 
 // 'idx' was activated in stable mode and is unassigned.  Under P1 and TS
@@ -575,23 +665,26 @@ static inline void kissat_bump_score (kissat *solver, unsigned idx,
 }
 
 // A step of conflict analysis starts: one round of 'kissat_analyze', before
-// any backtrack of its own.  Counting LRB's interval, UCB defers the closes
-// of the intervals the step's backtracks end to its bump round (see
-// 'keys.h'), and shadow mode's recount observes in that round the
-// variables assigned now.
+// any backtrack of its own.  With LRB's interval the closes of the
+// intervals the step's backtracks end wait for its bump round, or its end
+// (see 'intervals.h'), and shadow mode's recount of UCB's counts observes
+// in that round the variables assigned now.
 
 static inline void kissat_policy_begin_analysis (kissat *solver) {
 #ifdef FEEDBACK
-  kissat_feedback_begin_analysis (solver); // LRB's interval too
+  kissat_feedback_begin_analysis (solver); // M3's levels
 #endif
-  keys *const keys = &solver->policy.keys;
-  if (!keys->interval || !solver->stable)
+  intervals *const intervals = &solver->policy.intervals;
+  if (!intervals->interval || !solver->stable)
     return;
-  assert (!keys->analyzing);
-  assert (!keys->deferring);
-  assert (EMPTY_STACK (keys->deferred));
-  keys->analyzing = true;
+  assert (!intervals->analyzing);
+  assert (!intervals->deferring);
+  assert (EMPTY_STACK (intervals->deferred));
+  intervals->analyzing = true;
 #ifdef SHADOW
+  keys *const keys = &solver->policy.keys;
+  if (!keys->intervals)
+    return;
   unsigneds *const observed = &keys->observed;
   CLEAR_STACK (*observed);
   const flags *const flags = solver->flags;
@@ -608,14 +701,14 @@ static inline void kissat_policy_end_analysis (kissat *solver) {
 #ifdef FEEDBACK
   kissat_feedback_end_analysis (solver);
 #endif
-  keys *const keys = &solver->policy.keys;
-  if (!keys->analyzing)
+  intervals *const intervals = &solver->policy.intervals;
+  if (!intervals->analyzing)
     return;
-  if (keys->deferring)
-    kissat_finish_deferred_keys (solver);
-  keys->analyzing = false;
+  if (intervals->deferring)
+    kissat_finish_deferred_intervals (solver);
+  intervals->analyzing = false;
 #ifdef SHADOW
-  CLEAR_STACK (keys->observed);
+  CLEAR_STACK (solver->policy.keys.observed);
 #endif
 }
 

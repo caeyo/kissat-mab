@@ -158,10 +158,7 @@ static void switch_to_focused_mode (kissat *solver) {
                 "switching to focused mode after %s conflicts",
                 FORMAT_COUNT (CONFLICTS));
 #ifndef HEAPARGMAX
-  kissat_leave_stable_keys (solver); // closes UCB's intervals
-#ifdef FEEDBACK
-  kissat_leave_stable_feedback (solver); // and the feedback's
-#endif
+  kissat_leave_stable_intervals (solver); // closes the intervals
 #endif
   solver->stable = false;
   update_mode_limit (solver, delta);

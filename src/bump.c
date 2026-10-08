@@ -58,19 +58,14 @@ void kissat_rescale_scores (kissat *solver) {
                 new_pseudo);
 }
 
-// UCB on VSIDS scores records the increment at assignment of the literals
-// assigned since its last record before the increment changes (see
-// 'keys.h').  Counting LRB's interval, the intervals a backtrack of this
-// analysis step ended close after the change, so that they count this
-// round, and only then are the literals assigned since the backtrack
-// recorded, so that their intervals start after it.
+// The increment grows by 1/d at every bump round.  With LRB's interval the
+// intervals a backtrack of this analysis step ended close after that, so
+// that they count this round, and only then are the literals assigned
+// since the backtrack recorded, so that their intervals start after it
+// (see 'intervals.h'); feedback builds first count the round for their
+// brute-force check.
 
 void kissat_bump_score_increment (kissat *solver) {
-#ifndef HEAPARGMAX
-  const bool deferring = solver->policy.keys.deferring;
-  if (!deferring)
-    kissat_record_keys (solver);
-#endif
   const double old_scinc = solver->scinc;
   const double decay = GET_OPTION (decay) * 1e-3;
   assert (0 <= decay), assert (decay <= 0.5);
@@ -79,13 +74,13 @@ void kissat_bump_score_increment (kissat *solver) {
   LOG ("new score increment %g = %g * %g", new_scinc, factor, old_scinc);
   solver->scinc = new_scinc;
 #ifndef HEAPARGMAX
-  if (deferring) {
-    kissat_finish_deferred_keys (solver);
-    kissat_record_keys (solver);
-  }
 #ifdef FEEDBACK
-  kissat_feedback_round_end (solver); // LRB's interval, as above
+  kissat_feedback_round_end (solver); // the brute force's count
 #endif
+  if (solver->policy.intervals.deferring) {
+    kissat_finish_deferred_intervals (solver);
+    kissat_record_intervals (solver);
+  }
 #endif
   if (new_scinc > MAX_SCORE)
     kissat_rescale_scores (solver);
@@ -108,13 +103,14 @@ void kissat_bump_variable (kissat *solver, unsigned idx) {
 
 // A bump round: every analyzed variable, then the increment.  It is
 // counted when it starts, so that a rescale during the round, triggered by
-// a score or by the increment, sees the number of the round.  Feedback
-// builds open the intervals of the variables assigned since their last
-// record before the round, and count every bump (see 'feedback.h').
+// a score or by the increment, sees the number of the round.  The
+// assignment intervals of the literals assigned since their last record
+// open before the round, so that it counts in them, and feedback builds
+// count every bump in the interval it falls in (see 'intervals.h').
 
 static void bump_analyzed_variable_scores (kissat *solver) {
-#ifdef FEEDBACK
-  kissat_feedback_round (solver); // opens intervals before the round
+#ifndef HEAPARGMAX
+  kissat_record_intervals (solver); // opens intervals before the round
 #endif
   solver->estimator.rounds++;
 #ifdef SHADOW

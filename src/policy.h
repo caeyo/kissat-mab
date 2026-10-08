@@ -142,7 +142,8 @@
 // history, without the counts' increments: on VSIDS scores, at the start
 // of every bump round every active variable on the trail is assigned
 // during the round, which observes it, or with 'ucbinterval=1' every
-// variable assigned when the round's analysis step started (see 'keys.h');
+// variable assigned when the round's analysis step started (see
+// 'intervals.h');
 // on CHB scores every payment observes its variable.  Each variable's recount is kept decayed to its
 // last observation, in bump rounds or CHB's stable-mode conflicts, and
 // decays by powers of d ('kissat_shadow_power').  Every 1000 picks, with
@@ -156,9 +157,10 @@
 // that also measures the feedback of the decision, Phase 3's M1, M2 and M3
 // (see 'feedback.h'), through hooks at the pick, the end of a search
 // propagation, the bump round and CHB's record of participants, CHB's
-// payments, stable-mode unassignment, leaving and entering stable mode,
-// rescales and compaction, and a count of the variables assigned at each
-// level in its frame.  Nothing in the solver reads the measurements.
+// payments, the steps of conflict analysis, rescales and compaction, the
+// closes of the assignment intervals (see 'intervals.h'), and a count of
+// the variables assigned at each level in its frame.  Nothing in the
+// solver reads the measurements.
 
 #if defined(HEAPARGMAX) && defined(SHADOW)
 #error "'HEAPARGMAX' and 'SHADOW' exclude each other"
@@ -211,6 +213,7 @@ struct estimator {
 
 #include "feedback.h"
 #include "indicator.h"
+#include "intervals.h"
 #include "keys.h"
 #include "random.h"
 #include "tree.h"
@@ -254,6 +257,8 @@ struct policy {
   tree tree;         // the available variables, their keys and weights
   indicator uniform; // mixing: the available variables, drawn uniformly
   keys keys;         // P1, TS and UCB: their terms and counts
+  intervals intervals; // UCB on VSIDS scores, feedback builds: assignment
+                       // intervals (see 'intervals.h')
 #ifdef FEEDBACK
   feedback feedback; // feedback builds: M1, M2 and M3 (see 'feedback.h')
 #endif

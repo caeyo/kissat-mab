@@ -67,37 +67,29 @@
 //
 //   VSIDS scores: an observation is a bump round during which the variable
 //   was assigned in stable mode, and 'inc' the score increment, which
-//   every bump round grows by 1/d.  When stable-mode backtracking unassigns
-//   the variable, 'count' grows by (inc - inc_a) / (1/d - 1), the sum of
-//   the increments of the rounds since its assignment, 'inc_a' being the
-//   increment then ('opened').  Assignment needs no hook: before the
-//   increment changes (a bump round, a rescale), before every stable-mode
-//   backtrack and when stable mode is left, the literals assigned since the
-//   last record ('counted', a trail position) are recorded with the current
-//   increment, which is the one they were assigned at.  Shrinking the trail
-//   moves 'counted' down with it; compaction, which renames the trail's
-//   literals in place and moves 'opened' with its variables, leaves it.
-//   Leaving stable mode closes every open interval, and entering it opens
-//   one for every assigned variable.  Counts and 'opened' are rescaled with
-//   the scores.
+//   every bump round grows by 1/d.  The variable's assignment intervals are
+//   those of 'intervals.h', which UCB starts: when an interval closes,
+//   'count' grows by (inc - inc_a) / (1/d - 1), the sum of the increments
+//   of the rounds since its assignment, 'inc_a' being the increment then,
+//   which the intervals record without a hook in propagation.  Leaving
+//   stable mode closes every open interval, and entering it opens one for
+//   every assigned variable.  Counts are rescaled with the scores.
 //
 //   Kissat bumps after the backjump of a conflict's analysis, so the
 //   rounds completed while a variable is assigned never include the
-//   conflict whose backjump unassigns it: the count lags LRB's interval
+//   conflict whose backjump unassigns it: such a count lags LRB's interval
 //   (Liang et al. 2016) by that conflict, where most of a variable's bumps
-//   land.  This was stage 2's count, which 'ucbinterval=0' keeps.  By
-//   default ('ucbinterval=1') the count is LRB's interval, the option being
-//   ignored but for UCB on VSIDS scores: a bump round observes every variable
+//   land.  This was stage 2's count, which 'ucbinterval=0' keeps: an
+//   interval closes when backtracking unassigns its variable.  By default
+//   ('ucbinterval=1') the count is LRB's interval, the option being ignored
+//   but for UCB on VSIDS scores: a bump round observes every variable
 //   assigned when the analysis step that makes it starts, before the
-//   step's backtracks.  A step is one round of 'kissat_analyze', between
-//   'kissat_policy_begin_analysis' and 'kissat_policy_end_analysis'.  An
-//   interval that a backtrack inside a step ends stays open ('deferred')
-//   until the step's bump round has grown the increment, so that it counts
-//   that round, and the literals assigned since the backtrack (the learned
-//   clause's asserted literal) are recorded only then, so that their
-//   intervals start after it.  A step without a bump round closes its
-//   deferred intervals at its end, with no round added.  The term of a
-//   deferred variable is recomputed when its interval closes.
+//   step's backtracks, since the intervals those backtracks end close only
+//   after the step's bump round has grown the increment, and the literals
+//   assigned since the backtrack (the learned clause's asserted literal)
+//   open theirs after it (see 'intervals.h').  A step without a bump round
+//   closes its deferred intervals at its end, with no round added.  The
+//   term of a deferred variable is recomputed when its interval closes.
 //
 //   CHB scores: an observation is a payment, and 'inc' an increment of the
 //   counts' own, which grows by 1/d at every stable-mode conflict, after
@@ -131,13 +123,10 @@ struct keys {
                      // a positive factor)
   bool redraw;       // P1 and TS draw at rephases, not at restarts
   bool counts;       // observation counts (UCB, TS on CHB scores)
-  bool intervals;    // increments at assignment (UCB on VSIDS scores)
-  bool interval;     // ... counting LRB's interval ('ucbinterval=1')
-  bool analyzing;    // ... inside a step of conflict analysis
-  bool deferring;    // ... a backtrack of the step deferred closes
+  bool intervals;    // UCB on VSIDS scores: counts of the intervals of
+                     // 'intervals.h'
   bool spared;       // TS: 'spare' holds the second normal of a pair
   unsigned size;     // variables the arrays have room for
-  unsigned counted;  // UCB on VSIDS scores: trail recorded up to here
   double factor;     // kappa (TS) or c (UCB)
   double scale;      // UCB: c * sqrt (ln T) at the last draw point
   double total;      // UCB: T at the last draw point
@@ -147,14 +136,12 @@ struct keys {
   double *term;      // e^x (VSIDS scores) or x (CHB scores)
   double *normal;    // TS: z
   double *count;     // UCB, TS on CHB scores: inflated counts
-  double *opened;    // UCB on VSIDS scores: increment at assignment
   uint64_t draws;    // draw points
   uint64_t ticks;    // clock ticks spent at draw points (metrics)
-  unsigneds deferred; // 'interval': variables whose closes are deferred
 #ifdef SHADOW
   double *recount;     // shadow mode: the counts recounted (see 'policy.h')
   uint64_t *recounted; // the bump round or conflict 'recount' is decayed to
-  unsigneds observed;  // 'interval': assigned when the step started
+  unsigneds observed;  // LRB's interval: assigned when the step started
 #endif
 };
 
@@ -176,17 +163,15 @@ void kissat_rephase_keys (struct kissat *);
 
 void kissat_activate_keys (struct kissat *, unsigned idx);
 
-// Stable mode is left: closes the open intervals of UCB's counts.
+// UCB on VSIDS scores: the interval of 'idx' closes (see 'intervals.h'),
+// at its unassignment, after the bump round or at the end of the step
+// whose backtrack ended it, or when stable mode is left ('how').
 
-void kissat_leave_stable_keys (struct kissat *);
+void kissat_close_keys_interval (struct kissat *, unsigned idx,
+                                 unsigned how);
 
-// UCB counting LRB's interval: closes the intervals deferred in the
-// current analysis step, at the current increment (see above).
-
-void kissat_finish_deferred_keys (struct kissat *);
-
-// Rescales UCB's counts and increments at assignment on VSIDS scores by
-// the scores' factor, and on CHB scores the counts with their increment.
+// Rescales UCB's counts on VSIDS scores by the scores' factor, and on CHB
+// scores the counts with their increment.
 
 void kissat_rescale_keys (struct kissat *, double factor);
 void kissat_rescale_chb_counts (struct kissat *);
@@ -205,8 +190,6 @@ static inline void kissat_move_keys (keys *keys, unsigned from,
     keys->normal[to] = keys->normal[from];
   if (keys->counts)
     keys->count[to] = keys->count[from];
-  if (keys->intervals)
-    keys->opened[to] = keys->opened[from];
 #ifdef SHADOW
   if (keys->counts) {
     keys->recount[to] = keys->recount[from];
@@ -223,8 +206,6 @@ static inline void kissat_clear_keys (keys *keys, unsigned idx) {
     keys->normal[idx] = 0;
   if (keys->counts)
     keys->count[idx] = 0;
-  if (keys->intervals)
-    keys->opened[idx] = 0;
 #ifdef SHADOW
   if (keys->counts) {
     keys->recount[idx] = 0;

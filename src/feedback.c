@@ -7,6 +7,7 @@
 #include "chb.h"
 #include "error.h"
 #include "inline.h"
+#include "inlinepolicy.h"
 #include "print.h"
 
 #include <inttypes.h>
@@ -61,10 +62,7 @@ void kissat_resize_feedback (kissat *solver, unsigned new_size) {
       RESIZE (fb->n[c], 1);
       RESIZE (fb->r[c], 1);
     }
-    RESIZE (fb->opened, 1);
     RESIZE (fb->frozen, FEEDBACK_PREDICTORS);
-    RESIZE (fb->start, 1);
-    RESIZE (fb->bumps, 1);
     RESIZE (fb->last, 1);
 #ifndef NDEBUG
     RESIZE (fb->check.rounds, 1);
@@ -92,10 +90,7 @@ void kissat_release_feedback (kissat *solver) {
     RELEASE (fb->q[c], 1);
     RELEASE (fb->paid[c], 1);
   }
-  RELEASE (fb->opened, 1);
   RELEASE (fb->frozen, FEEDBACK_PREDICTORS);
-  RELEASE (fb->start, 1);
-  RELEASE (fb->bumps, 1);
   RELEASE (fb->last, 1);
   RELEASE (fb->count, 1);
   RELEASE (fb->latest, 1);
@@ -116,7 +111,6 @@ void kissat_release_feedback (kissat *solver) {
   RELEASE_STACK (fb->check.staged);
   RELEASE_STACK (fb->check.levels);
 #endif
-  RELEASE_STACK (fb->deferred);
   RELEASE_STACK (fb->staged);
   fb->size = 0;
 }
@@ -134,7 +128,6 @@ void kissat_start_feedback (kissat *solver) {
   const double decay = GET_OPTION (decay) * 1e-3;
   fb->growth = 1.0 / (1.0 - decay);
   fb->increment = 1;
-  fb->counted = 0;
   kissat_resize_feedback (solver, solver->size);
   kissat_very_verbose (solver, "measuring the decision's feedback on %s "
                                "scores",
@@ -172,12 +165,9 @@ void kissat_move_feedback (kissat *solver, unsigned from, unsigned to) {
     fb->n[c][to] = fb->n[c][from];
     fb->r[c][to] = fb->r[c][from];
   }
-  fb->opened[to] = fb->opened[from];
   for (unsigned i = 0; i < FEEDBACK_PREDICTORS; i++)
     fb->frozen[FEEDBACK_PREDICTORS * to + i] =
         fb->frozen[FEEDBACK_PREDICTORS * from + i];
-  fb->start[to] = fb->start[from];
-  fb->bumps[to] = fb->bumps[from];
   fb->last[to] = fb->last[from];
 #ifndef NDEBUG
   fb->check.rounds[to] = fb->check.rounds[from];
@@ -215,10 +205,9 @@ void kissat_clear_feedback (kissat *solver, unsigned idx) {
   }
   for (unsigned c = 0; c < 2; c++)
     fb->n[c][idx] = fb->r[c][idx] = 0;
-  fb->opened[idx] = 0;
   for (unsigned i = 0; i < FEEDBACK_PREDICTORS; i++)
     fb->frozen[FEEDBACK_PREDICTORS * idx + i] = 0;
-  fb->start[idx] = fb->bumps[idx] = fb->last[idx] = 0;
+  fb->last[idx] = 0;
 #ifndef NDEBUG
   fb->check.rounds[idx] = 0;
   fb->check.bumped[idx] = 0;
@@ -231,35 +220,11 @@ static inline unsigned class_of (kissat *solver, unsigned idx) {
                                                          : FEEDBACK_IMP;
 }
 
-// VSIDS line: every active literal assigned since the last record opens an
-// interval, at the current increment and round counter, which it was
-// assigned at: neither changes between records (see 'keys.h').  While a
-// step's closes are deferred, the literals assigned since its backtrack
-// wait for the step's bump round, which records them after it.
+// An interval's class in 'intervals.h' as this build's: decided, or
+// implied (asserted or propagated).
 
-void kissat_record_feedback (kissat *solver) {
-  feedback *const fb = &solver->policy.feedback;
-  if (!fb->started || fb->chb || !solver->stable || fb->deferring)
-    return;
-  const unsigned size = SIZE_ARRAY (solver->trail);
-  unsigned counted = fb->counted;
-  if (counted >= size)
-    return;
-  const unsigned *const trail = BEGIN_ARRAY (solver->trail);
-  const flags *const flags = solver->flags;
-  const double inc = solver->scinc;
-  const uint64_t round = solver->estimator.rounds;
-  while (counted < size) {
-    const unsigned lit = trail[counted++];
-    const unsigned idx = IDX (lit);
-    if (!flags[idx].active)
-      continue;
-    fb->opened[idx] = inc;
-    fb->start[idx] = round;
-    fb->bumps[idx] = 0;
-    fb->state[idx] |= FEEDBACK_OPEN;
-  }
-  fb->counted = size;
+static inline unsigned feedback_class (unsigned c) {
+  return c == INTERVALS_DECIDED ? FEEDBACK_DEC : FEEDBACK_IMP;
 }
 
 #ifndef NDEBUG
@@ -284,48 +249,24 @@ static void check_interval (kissat *solver, unsigned idx, uint64_t k,
 
 #endif
 
-// VSIDS line: a bump round starts.  The intervals of the variables assigned
-// since the last record are opened first, so that their bumps in this
-// round find them, and the round counted in them, unless the step's closes
-// are deferred: then the literals assigned since its backtrack wait for
-// the round's end.
-
-void kissat_feedback_round (kissat *solver) {
-  feedback *const fb = &solver->policy.feedback;
-  if (!fb->started)
-    return;
-  assert (!fb->chb);
-  assert (solver->stable);
-  kissat_record_feedback (solver);
-}
-
 // VSIDS line: the bump of the active variable 'idx' in the current round,
-// before its score, in the interval it falls in: the one a backtrack of
-// this step ended, if any, whose class is kept with it, since the
-// variable may be assigned again (the asserted literal); else the open
-// one of the assigned variable.  A bump in no interval happens only in
-// the unit tests, which bump outside analysis steps.
+// before its score, in the interval it falls in, which counts it (see
+// 'kissat_interval_bumped').  A bump in no interval happens only in the
+// unit tests, which bump outside analysis steps.
 
 void kissat_feedback_bump (kissat *solver, unsigned idx) {
   feedback *const fb = &solver->policy.feedback;
   if (!fb->started)
     return;
   assert (!fb->chb);
-  const unsigned state = fb->state[idx];
-  unsigned c;
-  if (state & FEEDBACK_DEFERRED) {
-    c = state & FEEDBACK_DEFERRED_IMP ? FEEDBACK_IMP : FEEDBACK_DEC;
-    fb->m1.bumps[1][c]++;
-  } else if (VALUE (LIT (idx)) && state & FEEDBACK_OPEN) {
-    assert (solver->assigned[idx].trail < fb->counted);
-    c = class_of (solver, idx);
-    fb->m1.bumps[0][c]++;
-  } else {
+  const unsigned bumped = kissat_interval_bumped (solver, idx);
+  if (bumped == INTERVALS_NONE) {
     fb->m1.unobserved++;
     return;
   }
+  const unsigned c = feedback_class (bumped & INTERVALS_CLASS);
+  fb->m1.bumps[!!(bumped & INTERVALS_ENDED)][c]++;
   fb->r[c][idx] += solver->scinc;
-  fb->bumps[idx]++;
 }
 
 // Bins and sums.
@@ -638,7 +579,7 @@ void kissat_feedback_observe (kissat *solver) {
   if (!fb->started)
     return;
   assert (solver->stable);
-  if (!fb->analyzing)
+  if (!solver->policy.intervals.analyzing)
     stage_yields (solver);
   uint64_t *const observed = fb->observed;
   const unsigned *const end = END_STACK (fb->staged);
@@ -690,26 +631,23 @@ void kissat_feedback_propagated (kissat *solver) {
 }
 
 // VSIDS line: the interval of the active variable 'idx', of class 'c',
-// closes: at its unassignment in stable mode, after the bump round of the
-// analysis step whose backtrack ended it, or when stable mode is left.
-// Its rounds go to the count of its class, as UCB's do; a decided interval
-// adds to the sums of p_const; the interval of a pending pick is an event
-// of M1 and the pick's outcome in M2 and M3.  Every variable on the trail
-// has its interval open when it closes, except in the unit tests, which
-// assign some variables off the trail; for those there is nothing to
-// close.
+// closes (see 'intervals.h'): at its unassignment in stable mode, after
+// the bump round of the analysis step whose backtrack ended it, or when
+// stable mode is left.  Its rounds go to the count of its class, as UCB's
+// do; a decided interval adds to the sums of p_const; the interval of a
+// pending pick is an event of M1 and the pick's outcome in M2 and M3.
 
 static void close_interval (kissat *solver, unsigned idx, unsigned c) {
   feedback *const fb = &solver->policy.feedback;
+  const intervals *const intervals = &solver->policy.intervals;
   assert (!fb->chb);
-  if (!(fb->state[idx] & FEEDBACK_OPEN))
-    return;
+  assert (intervals->rounds);
   const double inc = solver->scinc;
-  fb->n[c][idx] += (inc - fb->opened[idx]) / (fb->growth - 1);
+  fb->n[c][idx] += (inc - intervals->opened[idx]) / (fb->growth - 1);
   const uint64_t round = solver->estimator.rounds;
-  assert (fb->start[idx] <= round);
-  const uint64_t k = round - fb->start[idx];
-  const uint64_t b = fb->bumps[idx];
+  assert (intervals->start[idx] <= round);
+  const uint64_t k = round - intervals->start[idx];
+  const uint64_t b = intervals->bumps[idx];
   assert (b <= k);
 #ifndef NDEBUG
   check_interval (solver, idx, k, b);
@@ -745,9 +683,6 @@ static void close_interval (kissat *solver, unsigned idx, unsigned c) {
     add_yield (solver, idx, state, k, b, 0);
   }
   fb->state[idx] = 0;
-  fb->opened[idx] = inc;
-  fb->start[idx] = round;
-  fb->bumps[idx] = 0;
 }
 
 // CHB line: the interval of the pending pick of 'idx' closes, for M3: at
@@ -769,65 +704,21 @@ static void close_yield (kissat *solver, unsigned idx) {
   fb->state[idx] = 0;
 }
 
-// Stable-mode backtracking unassigned 'idx'.  Inside an analysis step the
-// close waits for the step's bump round, or its end (LRB's interval), and
-// on the CHB line M3's close for the step's end.
+// The assignment interval of 'idx', of class 'c' in 'intervals.h', closes:
+// on the VSIDS line M1's interval, on the CHB line M3's pending pick, if
+// 'idx' has one.  On the CHB line a close that a backtrack of an analysis
+// step deferred happens at the step's end, after its conflict.
 
-void kissat_feedback_unassign (kissat *solver, unsigned idx) {
+void kissat_close_feedback_interval (kissat *solver, unsigned idx,
+                                     unsigned c) {
   feedback *const fb = &solver->policy.feedback;
   if (!fb->started)
     return;
   assert (solver->stable);
-  if (fb->chb) {
-    uint16_t *const state = fb->state + idx;
-    if (!(*state & FEEDBACK_YIELD))
-      return;
-    if (!fb->analyzing) {
-      close_yield (solver, idx);
-      return;
-    }
-    assert (!(*state & FEEDBACK_CLOSING));
-    *state |= FEEDBACK_CLOSING;
-    PUSH_STACK (fb->deferred, idx);
-    fb->deferring = true;
-    return;
-  }
-  const unsigned c = class_of (solver, idx);
-  uint16_t *const state = fb->state + idx;
-  if (!fb->analyzing || !(*state & FEEDBACK_OPEN)) {
-    close_interval (solver, idx, c);
-    return;
-  }
-  assert (solver->assigned[idx].trail < fb->counted);
-  assert (!(*state & FEEDBACK_DEFERRED));
-  *state |= FEEDBACK_DEFERRED;
-  if (c == FEEDBACK_IMP)
-    *state |= FEEDBACK_DEFERRED_IMP;
-  PUSH_STACK (fb->deferred, idx);
-  fb->deferring = true;
-}
-
-// The intervals deferred in the current step close, with the increment and
-// round counter of now: after its bump round, they count it.  On the CHB
-// line M3's picks deferred to the step's end close, after its conflict.
-
-static void finish_deferred (kissat *solver) {
-  feedback *const fb = &solver->policy.feedback;
-  assert (fb->deferring);
-  for (all_stack (unsigned, idx, fb->deferred)) {
-    const unsigned state = fb->state[idx];
-    if (fb->chb) {
-      assert (state & FEEDBACK_CLOSING);
-      close_yield (solver, idx);
-      continue;
-    }
-    assert (state & FEEDBACK_DEFERRED);
-    const unsigned c =
-        state & FEEDBACK_DEFERRED_IMP ? FEEDBACK_IMP : FEEDBACK_DEC;
-    close_interval (solver, idx, c);
-  }
-  CLEAR_STACK (fb->deferred);
-  fb->deferring = false;
+  if (!fb->chb)
+    close_interval (solver, idx, feedback_class (c));
+  else if (fb->state[idx] & FEEDBACK_YIELD)
+    close_yield (solver, idx);
 }
 
 // A step of conflict analysis starts, before its backtracks.  M3 takes the
@@ -839,9 +730,6 @@ void kissat_feedback_begin_analysis (kissat *solver) {
   feedback *const fb = &solver->policy.feedback;
   if (!fb->started || !solver->stable)
     return;
-  assert (!fb->analyzing), assert (!fb->deferring);
-  assert (EMPTY_STACK (fb->deferred));
-  fb->analyzing = true;
   stage_yields (solver);
 #ifndef NDEBUG
   if (fb->chb)
@@ -855,33 +743,27 @@ void kissat_feedback_begin_analysis (kissat *solver) {
 #endif
 }
 
-// The step ends, after its bump round if it had one: closes still deferred
-// (no round) happen now, without a round, and M3's levels taken at its
-// start are dropped if its analyzed variables were neither bumped nor
+// The step ends, after its bump round if it had one, before the closes
+// still deferred (no round) happen, without a round: M3's levels taken at
+// its start are dropped if its analyzed variables were neither bumped nor
 // recorded.
 
 void kissat_feedback_end_analysis (kissat *solver) {
   feedback *const fb = &solver->policy.feedback;
-  if (!fb->analyzing)
+  if (!fb->started || !solver->policy.intervals.analyzing)
     return;
   CLEAR_STACK (fb->staged);
   fb->staged_levels = fb->staged_segments = 0;
 #ifndef NDEBUG
   CLEAR_STACK (fb->check.staged);
-#endif
-  if (fb->deferring)
-    finish_deferred (solver);
-  fb->analyzing = false;
-#ifndef NDEBUG
   CLEAR_STACK (fb->check.listed);
 #endif
 }
 
-// VSIDS line: a bump round ends, after the increment grew.  Assertion
-// builds count the round and the bumps of the variables it observes, the
-// step's listed ones (outside a step, in the unit tests, those on the
-// trail).  Then the deferred closes happen, counting the round, and the
-// literals assigned since the step's backtrack open their intervals.
+// VSIDS line: a bump round ends, after the increment grew, before the
+// closes it ends (see 'intervals.h').  Assertion builds count the round and
+// the bumps of the variables it observes, the step's listed ones (outside
+// a step, in the unit tests, those on the trail).
 
 void kissat_feedback_round_end (kissat *solver) {
   feedback *const fb = &solver->policy.feedback;
@@ -898,7 +780,7 @@ void kissat_feedback_round_end (kissat *solver) {
       marked[idx] = round;
   uint64_t *const rounds = fb->check.rounds;
   uint64_t *const bumped = fb->check.bumped;
-  if (fb->analyzing) {
+  if (solver->policy.intervals.analyzing) {
     for (all_stack (unsigned, idx, fb->check.listed)) {
       rounds[idx]++;
       if (marked[idx] == round)
@@ -915,60 +797,20 @@ void kissat_feedback_round_end (kissat *solver) {
         bumped[idx]++;
     }
 #endif
-  if (!fb->deferring)
-    return;
-  finish_deferred (solver);
-  kissat_record_feedback (solver);
 }
 
-// Every variable still assigned when stable mode is left closes its
-// interval, and on the CHB line every pick still pending in M3.  Entering
-// stable mode opens one for every assigned variable at the next record.
-
-void kissat_leave_stable_feedback (kissat *solver) {
-  const feedback *const fb = &solver->policy.feedback;
-  if (!fb->started)
-    return;
-  assert (solver->stable);
-  assert (!fb->analyzing);
-  assert (!fb->yielding);
-  if (fb->chb) {
-    for (all_stack (unsigned, lit, solver->trail))
-      if (fb->state[IDX (lit)] & FEEDBACK_YIELD)
-        close_yield (solver, IDX (lit));
-    return;
-  }
-  kissat_record_feedback (solver);
-  const flags *const flags = solver->flags;
-  const unsigned *const begin = BEGIN_ARRAY (solver->trail);
-  const unsigned *const end = END_ARRAY (solver->trail);
-  for (const unsigned *p = begin; p != end; p++) {
-    const unsigned idx = IDX (*p);
-    if (flags[idx].active)
-      close_interval (solver, idx, class_of (solver, idx));
-  }
-}
-
-void kissat_enter_stable_feedback (kissat *solver) {
-  solver->policy.feedback.counted = 0;
-}
-
-// The sums in units of the increment and the increments at assignment
-// follow the scores' rescale, after the literals assigned since the last
-// record were recorded at the old increment.
+// The sums in units of the increment follow the scores' rescale, as the
+// increments at assignment do (see 'intervals.h').
 
 void kissat_rescale_feedback (kissat *solver, double factor) {
   feedback *const fb = &solver->policy.feedback;
   if (!fb->started || fb->chb)
     return;
-  kissat_record_feedback (solver);
-  for (all_variables (idx)) {
+  for (all_variables (idx))
     for (unsigned c = 0; c < 2; c++) {
       fb->n[c][idx] *= factor;
       fb->r[c][idx] *= factor;
     }
-    fb->opened[idx] *= factor;
-  }
 }
 
 // CHB line: a payment.  If its variable is decided it is an event of M1,
@@ -1062,7 +904,8 @@ void kissat_shadow_feedback_paid (kissat *solver, unsigned idx) {
 #ifndef NDEBUG
 
 // Every 1000 picks: the counts against UCB's (see 'feedback.h'), on VSIDS
-// scores those of UCB counting LRB's interval ('ucbinterval=1').
+// scores those of UCB counting LRB's interval, the only count UCB keeps in
+// feedback builds (see 'intervals.h'), on the same intervals.
 
 #define FEEDBACK_CHECK_TOLERANCE 1e-12
 
@@ -1075,8 +918,10 @@ static void complete_check (kissat *solver) {
   const flags *const flags = solver->flags;
   const uint64_t pick = fb->check.picks;
   if (!fb->chb) {
-    if (!keys->interval)
+    if (!keys->intervals)
       return;
+    const intervals *const intervals = &solver->policy.intervals;
+    assert (intervals->interval);
     const double inc = solver->scinc;
     const double geometric = fb->growth - 1;
     const value *const values = solver->values;
@@ -1086,20 +931,10 @@ static void complete_check (kissat *solver) {
         continue;
       double mine = fb->n[FEEDBACK_DEC][idx] + fb->n[FEEDBACK_IMP][idx];
       double ucb = keys->count[idx];
-      if (values[LIT (idx)]) {
-        const unsigned trail = assigned[idx].trail;
-        const bool recorded = trail < fb->counted;
-        const bool ucb_recorded = trail < keys->counted;
-        if (recorded)
-          mine += (inc - fb->opened[idx]) / geometric;
-        if (ucb_recorded)
-          ucb += (inc - keys->opened[idx]) / geometric;
-        if (recorded && ucb_recorded &&
-            !kissat_same_double (fb->opened[idx], keys->opened[idx]))
-          kissat_fatal ("feedback: pick %" PRIu64 ": increment %.17g at "
-                        "the assignment of variable %u differs from "
-                        "UCB's %.17g",
-                        pick, fb->opened[idx], idx, keys->opened[idx]);
+      if (values[LIT (idx)] && assigned[idx].trail < intervals->counted) {
+        const double open = (inc - intervals->opened[idx]) / geometric;
+        mine += open;
+        ucb += open;
       }
       const double n = mine / inc, expected = ucb / inc;
       const double error = fabs (n - expected) / (1 + expected);
@@ -1164,7 +999,7 @@ void kissat_feedback_pick (kissat *solver, unsigned idx, bool uniform) {
   assert (solver->stable);
   assert (!VALUE (LIT (idx)));
   const unsigned old_state = fb->state[idx];
-  assert (!(old_state & FEEDBACK_OPEN));
+  assert (!(solver->policy.intervals.state[idx] & INTERVALS_OPEN));
   if (old_state & FEEDBACK_PENDING)
     void_pick (fb, old_state);
   if (old_state & FEEDBACK_YIELD)

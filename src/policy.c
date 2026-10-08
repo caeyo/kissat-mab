@@ -242,8 +242,8 @@ void kissat_shadow_round (kissat *solver) {
   assert (keys->recount), assert (keys->recounted);
   const uint64_t round = solver->estimator.rounds;
   const double decay = kissat_shadow_decay (solver);
-  if (keys->analyzing) {
-    assert (keys->interval);
+  if (policy->intervals.analyzing) {
+    assert (policy->intervals.interval);
     for (all_stack (unsigned, idx, keys->observed))
       shadow_observe (solver, idx, round, decay);
     return;
@@ -261,9 +261,9 @@ void kissat_shadow_round (kissat *solver) {
 // Every active variable's count against its recount, decayed to the
 // current bump round or conflict.  On VSIDS scores an assigned variable
 // whose assignment is recorded adds the bump rounds since then, as leaving
-// stable mode would add them ('kissat_leave_stable_keys'); one assigned
-// after the last record was assigned at the current increment and adds
-// none.  Nothing is changed.
+// stable mode would add them ('kissat_leave_stable_intervals'); one
+// assigned after the last record was assigned at the current increment and
+// adds none.  Nothing is changed.
 
 #define SHADOW_RECOUNT_TOLERANCE 1e-12
 
@@ -279,13 +279,15 @@ static void shadow_check_counts (kissat *solver) {
   const flags *const flags = solver->flags;
   const value *const values = solver->values;
   const assigned *const assigned = solver->assigned;
+  const intervals *const intervals = &policy->intervals;
   const uint64_t pick = policy->shadow.picks;
   for (all_variables (idx)) {
     if (!flags[idx].active)
       continue;
     double count = keys->count[idx];
-    if (!chb && values[LIT (idx)] && assigned[idx].trail < keys->counted)
-      count += (inc - keys->opened[idx]) / rounds;
+    if (!chb && values[LIT (idx)] &&
+        assigned[idx].trail < intervals->counted)
+      count += (inc - intervals->opened[idx]) / rounds;
     const double n = count / inc;
     assert (keys->recounted[idx] <= now);
     const double age = now - keys->recounted[idx];
@@ -539,8 +541,9 @@ unsigned kissat_policy_peek (kissat *solver) {
 // rebuilt even if no variable was added: focused mode unassigns variables
 // without the policy's hooks, so leaves that lagged their scores when
 // stable mode was left may belong to unassigned variables now.  For P1, TS
-// and UCB entering stable mode is a draw point, which rebuilds the tree,
-// and the variables assigned now open UCB's intervals (see 'keys.h').
+// and UCB entering stable mode is a draw point, which rebuilds the tree.
+// The variables assigned now open their assignment intervals at the next
+// record (see 'intervals.h').
 
 void kissat_update_scores (kissat *solver) {
   assert (solver->stable);
@@ -558,14 +561,11 @@ void kissat_update_scores (kissat *solver) {
       kissat_policy_put_leaf (solver, idx);
       added = true;
     }
-  if (policy->keys.kind) {
-    policy->keys.counted = 0;
+  policy->intervals.counted = 0;
+  if (policy->keys.kind)
     kissat_draw_keys (solver);
-  } else if (added || kissat_chb (solver))
+  else if (added || kissat_chb (solver))
     kissat_rebuild_policy (solver);
-#ifdef FEEDBACK
-  kissat_enter_stable_feedback (solver); // opens the intervals
-#endif
   indicator *const uniform = &solver->policy.uniform;
   if (!uniform->enabled)
     return;
@@ -579,12 +579,14 @@ void kissat_update_scores (kissat *solver) {
     kissat_rebuild_indicator (uniform);
 }
 
-// Frees the tree, the indicator tree and the arrays of P1, TS and UCB.
+// Frees the tree, the indicator tree, the arrays of P1, TS and UCB and
+// those of the assignment intervals.
 
 void kissat_release_policy (kissat *solver) {
   kissat_release_tree (solver, &solver->policy.tree);
   kissat_release_indicator (solver, &solver->policy.uniform);
   kissat_release_keys (solver);
+  kissat_release_intervals (solver);
 #ifdef FEEDBACK
   kissat_release_feedback (solver);
 #endif
@@ -775,8 +777,9 @@ static void start_mixing (kissat *solver, unsigned gammappm) {
 // Seeds the generator and fixes the policy.  Sample weighs the tree, which
 // at this point may already hold variables ('kissat_update_scores' with
 // '--stable=2').  P1, TS and UCB, if selected, start with a draw point if
-// the search starts in stable mode (see 'keys.h').  The clock of the
-// decision metrics starts here.
+// the search starts in stable mode (see 'keys.h'), and UCB on VSIDS scores
+// and feedback builds start the assignment intervals (see 'intervals.h').
+// The clock of the decision metrics starts here.
 
 void kissat_start_policy (kissat *solver) {
   policy *const policy = &solver->policy;
@@ -793,6 +796,7 @@ void kissat_start_policy (kissat *solver) {
 #ifdef FEEDBACK
   kissat_start_feedback (solver);
 #endif
+  kissat_start_intervals (solver);
   const unsigned gammappm = GET_OPTION (gammappm);
   if (gammappm && !policy->uniform.enabled)
     start_mixing (solver, gammappm);

@@ -92,12 +92,9 @@ void kissat_backtrack_without_updating_phases (kissat *solver,
 #ifndef HEAPARGMAX
     // Under CHB the leaves of the paid variables are refreshed here.
     kissat_defer_policy_sums (solver, old_end - new_end);
-    // UCB on VSIDS scores needs the increment at every literal's
-    // assignment (see 'keys.h'), and so do feedback builds.
-    kissat_record_keys (solver);
-#ifdef FEEDBACK
-    kissat_record_feedback (solver);
-#endif
+    // The literals assigned since the last record open their assignment
+    // intervals before any closes (see 'intervals.h').
+    kissat_record_intervals (solver);
 #endif
     for (const unsigned *p = q; p != old_end; p++) {
       const unsigned lit = *p;

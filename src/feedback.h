@@ -31,18 +31,20 @@
 // backtrack (the asserted literal) open their intervals only then, after
 // the round.  A step without a bump round closes its deferred intervals at
 // its end, with no round.  This is UCB's count with 'ucbinterval=1' (see
-// 'keys.h'), not stage 2's, which closes at the backtrack.
+// 'keys.h'), not stage 2's, which closes at the backtrack.  The intervals,
+// their record and their closes are the bookkeeping 'intervals.h' shares
+// with UCB, whose closes call 'kissat_close_feedback_interval', and whose
+// class of an interval, decided, asserted or propagated, this build reads
+// as decided or implied.
 //
 // M1 on the VSIDS line.  Per active variable four sums in the units of the
 // score increment, kept as UCB's counts are (grown by the increment,
-// rescaled with the scores, the increment at assignment recorded in
-// 'opened' without a hook in propagation, intervals closed at stable-mode
-// unassignment, or after the step's bump round, and when stable mode is
-// left, the record kept across compaction): 'n[c]', the bump rounds of the
-// intervals of class 'c', added as (inc - opened) / (1/d - 1) when an
-// interval closes, so that 'n[DEC] + n[IMP]' is UCB's count with
-// 'ucbinterval=1'; and 'r[c]', the increment at every bump of 'v', in the
-// class of the interval it falls in.  So p_c = r[c] / n[c] is a decayed
+// rescaled with the scores, on the intervals of 'intervals.h' with their
+// increments at assignment): 'n[c]', the bump rounds of the intervals of
+// class 'c', added as (inc - opened) / (1/d - 1) when an interval closes,
+// so that 'n[DEC] + n[IMP]' is UCB's count with 'ucbinterval=1'; and
+// 'r[c]', the increment at every bump of 'v', in the class of the interval
+// it falls in.  So p_c = r[c] / n[c] is a decayed
 // bump rate per round assigned, and p_all = (r[DEC] + r[IMP]) / (n[DEC] +
 // n[IMP]) the pooled one; r[DEC] + r[IMP] is the sum of the score's bumps.
 //
@@ -53,7 +55,8 @@
 // p_const = sum b / sum k over the decided intervals closed in stable mode
 // so far.  At the close (after the step's bump round, for an interval a
 // conflict ends) the interval's rounds 'k' (the round counter then minus at
-// its start) and bumped rounds 'b' give each predictor 'p' the
+// its start) and bumped rounds 'b', which 'intervals.h' keeps in feedback
+// builds, give each predictor 'p' the
 // per-round squared error b (1 - p)^2 + (k - b) p^2 and the per-interval
 // error (b / k - p)^2.  Events with k = 0 are counted and excluded.  The
 // others are summed in groups by which of p_dec and p_imp are defined,
@@ -126,10 +129,10 @@
 // round counted and its bump read from the analyzed variables directly
 // (outside a step, which only the unit tests make, the trail's), and at
 // every close the interval's 'k' and 'b' must equal those counts.  Every
-// 1000 picks, under UCB with 'ucbinterval=1' 'n[DEC] + n[IMP]' must equal
-// UCB's count for every active variable, an open interval added as leaving
-// stable mode would add it, to 1e-12 of 1 + N, and both records of the
-// increment at assignment must agree bitwise; on CHB scores under UCB or TS
+// 1000 picks, under UCB on VSIDS scores (which in feedback builds counts
+// LRB's interval) 'n[DEC] + n[IMP]' must equal UCB's count for every active
+// variable, an open interval added as leaving stable mode would add it, to
+// 1e-12 of 1 + N; on CHB scores under UCB or TS
 // the count must equal UCB's bitwise, and in shadow builds 'paid[DEC] +
 // paid[IMP]' the payments that shadow mode counts.  M3 by brute force:
 // when a step starts every level's variables are counted from the trail
@@ -212,22 +215,14 @@
 #define FEEDBACK_RECENT 1 // age recent
 
 // A variable's state: its pending pick with kind, age bin and count bin,
-// and on the VSIDS line whether its interval is open (recorded), and
-// whether a backtrack inside an analysis step ended it, deferring its close
-// to the step's bump round, with its class.  M3's pick is pending with
-// the bin of 'Y_v' until its interval closes, which on the CHB line a
-// backtrack inside a step defers to the step's end ('CLOSING').
+// and M3's pick, pending with the bin of 'Y_v' until its interval closes.
 
 #define FEEDBACK_PENDING 1u
 #define FEEDBACK_KIND_SHIFT 1
 #define FEEDBACK_AGE_SHIFT 2
 #define FEEDBACK_COUNT_SHIFT 4
-#define FEEDBACK_OPEN 64u
-#define FEEDBACK_DEFERRED 128u
-#define FEEDBACK_DEFERRED_IMP 256u
 #define FEEDBACK_YIELD 512u
 #define FEEDBACK_YIELD_SHIFT 10
-#define FEEDBACK_CLOSING 8192u
 
 typedef struct feedback_sums feedback_sums;
 typedef struct feedback_yields feedback_yields;
@@ -259,20 +254,13 @@ struct feedback_yields {
 struct feedback {
   bool started;      // the arrays exist (from the start of the search)
   bool chb;          // CHB line, VSIDS line otherwise
-  bool analyzing;    // VSIDS: inside a step of conflict analysis
-  bool deferring;    // VSIDS: a backtrack of the step deferred closes
   unsigned size;     // variables the arrays have room for
-  unsigned counted;  // VSIDS: trail recorded up to here (see 'keys.h')
   double growth;     // 1/d, d the score decay
   double increment;  // CHB: the counts' own increment, as UCB's
-  unsigneds deferred; // VSIDS: variables whose closes are deferred
-  uint16_t *state;   // pending pick, open and deferred interval
+  uint16_t *state;   // pending pick (M2), pick pending its interval (M3)
   double *n[2];      // VSIDS: rounds by class (inflated)
   double *r[2];      // VSIDS: bumps by class (inflated)
-  double *opened;    // VSIDS: increment at assignment
   double *frozen;    // VSIDS: the four predictors of a pending pick
-  uint64_t *start;   // VSIDS: round counter at the interval's start
-  uint64_t *bumps;   // VSIDS: bumped rounds of the open interval
   uint64_t *last;    // VSIDS: round counter at the close of the last
                      // interval with a round (zero: never observed)
   double *q[2];      // CHB: ERWAs by class
@@ -352,34 +340,25 @@ void kissat_release_feedback (struct kissat *);
 void kissat_move_feedback (struct kissat *, unsigned from, unsigned to);
 void kissat_clear_feedback (struct kissat *, unsigned idx);
 
-// VSIDS line: the literals assigned since the last record get the current
-// increment and round counter (see 'keys.h').  Called at the start of
-// every bump round, before every stable-mode backtrack, when stable mode
-// is left and before rescales.
+// VSIDS line: 'idx' is bumped in the current round (before its score), and
+// the round ends (after the increment has grown, before the closes it ends
+// in 'intervals.h').
 
-void kissat_record_feedback (struct kissat *);
-
-// VSIDS line: a bump round starts (before the round counter is advanced),
-// 'idx' is bumped in it (before its score), and the round ends (after the
-// increment has grown).
-
-void kissat_feedback_round (struct kissat *);
 void kissat_feedback_bump (struct kissat *, unsigned idx);
 void kissat_feedback_round_end (struct kissat *);
 
 // A step of conflict analysis starts, before its backtracks, and ends,
 // after its bump round (VSIDS) or its record of CHB's participants (CHB)
-// if it has one.
+// if it has one, before the closes it deferred (see 'intervals.h').
 
 void kissat_feedback_begin_analysis (struct kissat *);
 void kissat_feedback_end_analysis (struct kissat *);
 
-// Stable-mode backtracking unassigned 'idx'; stable mode is left; stable
-// mode is entered; the scores are rescaled by 'factor'.
+// The assignment interval of 'idx', of class 'c' (see 'intervals.h'),
+// closes; and the scores are rescaled by 'factor'.
 
-void kissat_feedback_unassign (struct kissat *, unsigned idx);
-void kissat_leave_stable_feedback (struct kissat *);
-void kissat_enter_stable_feedback (struct kissat *);
+void kissat_close_feedback_interval (struct kissat *, unsigned idx,
+                                     unsigned c);
 void kissat_rescale_feedback (struct kissat *, double factor);
 
 // CHB line: a payment of 'reward' to 'idx' whose score was 'old_q', at

@@ -3,6 +3,10 @@
 #include "inline.h"
 #include "reluctant.h"
 
+#ifndef HEAPARGMAX
+#include "inlinepolicy.h"
+#endif
+
 #include <inttypes.h>
 
 static unsigned backjump_limit (struct kissat *solver) {
@@ -65,6 +69,9 @@ static void learn_binary (kissat *solver, unsigned not_uip) {
       kissat_new_redundant_clause (solver, 1);
   assert (ref == INVALID_REF);
   kissat_assign_binary (solver, not_uip, other);
+#ifndef HEAPARGMAX
+  kissat_policy_asserted (solver, not_uip); // see 'intervals.h'
+#endif
 }
 
 static void insert_last_learned (kissat *solver, reference ref) {
@@ -112,6 +119,9 @@ static reference learn_reference (kissat *solver, unsigned not_uip,
       kissat_determine_new_level (solver, jump_level);
   kissat_backtrack_after_conflict (solver, new_level);
   kissat_assign_reference (solver, not_uip, ref, c);
+#ifndef HEAPARGMAX
+  kissat_policy_asserted (solver, not_uip); // see 'intervals.h'
+#endif
   return ref;
 }
 
