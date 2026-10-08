@@ -62,14 +62,18 @@ void kissat_release_intervals (kissat *solver) {
 }
 
 // UCB on VSIDS scores counts the intervals ('keys.h'), with LRB's interval
-// unless 'ucbinterval=0', and feedback builds measure them, always with
-// LRB's interval ('feedback.h').  A later search keeps the bookkeeping.
+// unless 'ucbinterval=0', feedback builds measure them, always with LRB's
+// interval ('feedback.h'), and LRB pays its reward at their closes, on CHB
+// scores with LRB's interval ('lrb.h').  A later search keeps the
+// bookkeeping.
 
 void kissat_start_intervals (kissat *solver) {
   intervals *const intervals = &solver->policy.intervals;
   if (intervals->started)
     return;
   const bool ucb = solver->policy.keys.intervals;
+  const bool lrb = solver->policy.lrb.started;
+  assert (!ucb || !lrb);
   const bool interval = GET_OPTION (ucbinterval);
 #ifdef FEEDBACK
   if (ucb && !interval)
@@ -80,11 +84,12 @@ void kissat_start_intervals (kissat *solver) {
 #else
   const bool feedback = false;
 #endif
-  if (!ucb && !feedback)
+  if (!ucb && !feedback && !lrb)
     return;
   intervals->started = true;
   intervals->vsids = !kissat_chb (solver);
   intervals->ucb = ucb;
+  intervals->lrb = lrb;
   intervals->rounds = feedback && intervals->vsids;
   intervals->interval = !ucb || interval;
   intervals->counted = 0;
@@ -95,7 +100,8 @@ void kissat_start_intervals (kissat *solver) {
                                            : "");
 }
 
-// The users' closes: UCB's count, and the feedback's measurements.
+// The users' closes: UCB's count, LRB's reward, and the feedback's
+// measurements.
 
 void kissat_close_interval (kissat *solver, unsigned idx, unsigned c,
                             unsigned how) {
@@ -103,6 +109,8 @@ void kissat_close_interval (kissat *solver, unsigned idx, unsigned c,
   assert (intervals->started);
   if (intervals->ucb)
     kissat_close_keys_interval (solver, idx, how);
+  if (intervals->lrb)
+    kissat_close_lrb_interval (solver, idx, how);
 #ifdef FEEDBACK
   kissat_close_feedback_interval (solver, idx, c);
 #else

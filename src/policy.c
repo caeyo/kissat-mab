@@ -20,7 +20,9 @@ void kissat_print_estimator_statistics (kissat *solver) {
   kissat_message (solver, "estimator-pseudo-zero-rescale %" PRIu64,
                   estimator->zero.rescale);
 #ifndef HEAPARGMAX
-  if (kissat_chb (solver)) {
+  if (kissat_lrb (solver))
+    kissat_print_lrb_statistics (solver); // CHB's ERWA, LRB's reward
+  else if (kissat_chb (solver)) {
     kissat_message (solver, "estimator-chb-conflicts %" PRIu64,
                     estimator->chb.conflicts);
     kissat_message (solver, "estimator-chb-analyzed %" PRIu64,
@@ -579,14 +581,15 @@ void kissat_update_scores (kissat *solver) {
     kissat_rebuild_indicator (uniform);
 }
 
-// Frees the tree, the indicator tree, the arrays of P1, TS and UCB and
-// those of the assignment intervals.
+// Frees the tree, the indicator tree, the arrays of P1, TS and UCB, those
+// of the assignment intervals and LRB's.
 
 void kissat_release_policy (kissat *solver) {
   kissat_release_tree (solver, &solver->policy.tree);
   kissat_release_indicator (solver, &solver->policy.uniform);
   kissat_release_keys (solver);
   kissat_release_intervals (solver);
+  kissat_release_lrb (solver);
 #ifdef FEEDBACK
   kissat_release_feedback (solver);
 #endif
@@ -777,9 +780,9 @@ static void start_mixing (kissat *solver, unsigned gammappm) {
 // Seeds the generator and fixes the policy.  Sample weighs the tree, which
 // at this point may already hold variables ('kissat_update_scores' with
 // '--stable=2').  P1, TS and UCB, if selected, start with a draw point if
-// the search starts in stable mode (see 'keys.h'), and UCB on VSIDS scores
-// and feedback builds start the assignment intervals (see 'intervals.h').
-// The clock of the decision metrics starts here.
+// the search starts in stable mode (see 'keys.h'), and UCB on VSIDS scores,
+// feedback builds and LRB (see 'lrb.h') start the assignment intervals
+// (see 'intervals.h').  The clock of the decision metrics starts here.
 
 void kissat_start_policy (kissat *solver) {
   policy *const policy = &solver->policy;
@@ -792,6 +795,7 @@ void kissat_start_policy (kissat *solver) {
   LOG ("initialized policy random number generator with seed %u", seed);
   if (kissat_chb (solver))
     kissat_very_verbose (solver, "CHB scores in stable mode");
+  kissat_start_lrb (solver);
   kissat_start_keys (solver);
 #ifdef FEEDBACK
   kissat_start_feedback (solver);

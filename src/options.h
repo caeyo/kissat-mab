@@ -77,6 +77,7 @@
   OPTION (incremental, 0, 0, 1, "enable incremental solving") \
   OPTION (jumpreasons, 1, 0, 1, "jump binary reasons") \
   LOGOPT (log, 0, 0, 5, "logging level (1=on,2=more,3=check,4/5=mem)") \
+  TREEOPT (lrb, 0, 0, 1, "LRB's reward on CHB's ERWA (with chb=1)") \
   OPTION (lucky, 1, 0, 1, "try some lucky assignments") \
   OPTION (luckyearly, 1, 0, 1, "lucky assignments before preprocessing") \
   OPTION (luckylate, 1, 0, 1, "lucky assignments after preprocessing") \

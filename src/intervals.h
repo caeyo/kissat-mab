@@ -3,12 +3,14 @@
 
 // The assignment intervals of the variables in stable mode (tree builds):
 // one bookkeeping shared by UCB's observation counts on VSIDS scores (see
-// 'keys.h') and the feedback build's measurements (see 'feedback.h'), and
-// in Phase 4 by the reward (research plan, Phase 4, Specification, part 2,
-// The bookkeeping).  It is started at the start of the search under UCB on
-// VSIDS scores and in feedback builds.  Otherwise it is not started and
-// every hook below returns at once, so that Argmax, Sample, mixing, P1, TS
-// and UCB on CHB scores run the code paths they ran without it.
+// 'keys.h'), the feedback build's measurements (see 'feedback.h') and LRB's
+// reward on CHB scores (see 'lrb.h'), and later by Phase 4's reward on
+// VSIDS scores (research plan, Phase 4, Specification, part 2, The
+// bookkeeping).  It is started at the start of the search under UCB on
+// VSIDS scores, in feedback builds and under LRB.  Otherwise it is not
+// started and every hook below returns at once, so that Argmax, Sample,
+// mixing, P1, TS and UCB on CHB scores run the code paths they ran without
+// it.
 //
 // An interval of a variable runs from its assignment to its unassignment
 // in stable mode.  Assignment needs no hook: at the start of every bump
@@ -54,8 +56,10 @@
 // LRB's interval a backtrack closes at once and no record is held back:
 // stage 2's count, which only UCB without the feedback build counts.  At a
 // close UCB adds the increments of the interval's bump rounds to its count
-// ('kissat_close_keys_interval'), and the feedback build adds the interval
-// to its measurements ('kissat_close_feedback_interval').
+// ('kissat_close_keys_interval'), the feedback build adds the interval to
+// its measurements ('kissat_close_feedback_interval'), and LRB pays its
+// reward for the interval of its own that its walk opened, if it opened
+// one ('kissat_close_lrb_interval').
 //
 // Bumps (feedback builds).  A bump of a variable falls in the interval a
 // backtrack of the current step ended, if there is one, else in the open
@@ -107,6 +111,7 @@ struct intervals {
   bool started;       // the arrays exist
   bool vsids;         // VSIDS line: increments and rounds at assignment
   bool ucb;           // UCB on VSIDS scores counts the intervals
+  bool lrb;           // LRB's reward on CHB scores pays at the closes
   bool rounds;        // feedback builds, VSIDS line: k and b
   bool interval;      // LRB's interval: a step's backtracks defer closes
   bool analyzing;     // ... inside a step of conflict analysis
@@ -122,11 +127,11 @@ struct intervals {
 
 struct kissat;
 
-// At the start of the search, after the policy's keys and the feedback
-// build's measurements: whether the bookkeeping runs, and its arrays.  In
-// feedback builds UCB on VSIDS scores with stage 2's count is a fatal
-// error, since one record cannot give an asserted literal both counts'
-// increments at assignment.
+// At the start of the search, after LRB, the policy's keys and the
+// feedback build's measurements: whether the bookkeeping runs, and its
+// arrays.  In feedback builds UCB on VSIDS scores with stage 2's count is a
+// fatal error, since one record cannot give an asserted literal both
+// counts' increments at assignment.
 
 void kissat_start_intervals (struct kissat *);
 void kissat_resize_intervals (struct kissat *, unsigned size);

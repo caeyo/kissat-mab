@@ -186,7 +186,10 @@
 // selected: the score of a variable is then its ERWA value Q, paid at
 // assignment, and there is no pseudo-activity, bumping, decay or
 // rescaling.  Its bookkeeping is 'chb' below and the solver's
-// variable-indexed array 'last_conflict'.
+// variable-indexed array 'last_conflict'.  With 'lrb=1' the same ERWA is
+// fed by LRB's reward, paid when a variable's assignment interval closes,
+// and its bookkeeping is the policy's 'lrb' (see 'lrb.h'), with 'chb'
+// below but for 'last_conflict'.
 
 typedef struct estimator estimator;
 
@@ -215,6 +218,7 @@ struct estimator {
 #include "indicator.h"
 #include "intervals.h"
 #include "keys.h"
+#include "lrb.h"
 #include "random.h"
 #include "tree.h"
 
@@ -257,8 +261,9 @@ struct policy {
   tree tree;         // the available variables, their keys and weights
   indicator uniform; // mixing: the available variables, drawn uniformly
   keys keys;         // P1, TS and UCB: their terms and counts
-  intervals intervals; // UCB on VSIDS scores, feedback builds: assignment
-                       // intervals (see 'intervals.h')
+  intervals intervals; // UCB on VSIDS scores, feedback builds, LRB:
+                       // assignment intervals (see 'intervals.h')
+  lrb lrb;             // LRB's reward on CHB scores (see 'lrb.h')
 #ifdef FEEDBACK
   feedback feedback; // feedback builds: M1, M2 and M3 (see 'feedback.h')
 #endif

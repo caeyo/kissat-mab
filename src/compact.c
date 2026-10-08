@@ -214,9 +214,10 @@ static void compact_scores (kissat *solver, heap *old_scores,
 
 // Moves every score, last conflict (CHB) and leaf of the policy tree, with
 // mixing of the indicator tree, under P1, TS and UCB their terms and
-// counts, and the assignment intervals, to the variable's new index, as
-// 'compact_scores' does for the heap.  Indices only decrease and the loop
-// goes up, so nothing is overwritten before it is moved.  Leaves of the
+// counts, the assignment intervals and LRB's intervals and counts, to the
+// variable's new index, as 'compact_scores' does for the heap.  Indices
+// only decrease and the loop goes up, so nothing is overwritten before it
+// is moved.  Leaves of the
 // variables that disappear are absent (they are inactive), and leaves
 // beyond the new number of variables are made absent.  Compaction may
 // happen during the search with variables assigned.  The trail keeps its
@@ -236,6 +237,7 @@ static void compact_policy (kissat *solver, unsigned vars) {
   indicator *const uniform = &solver->policy.uniform;
   keys *const keys = &solver->policy.keys;
   intervals *const intervals = &solver->policy.intervals;
+  lrb *const lrb = &solver->policy.lrb;
   assert (!intervals->deferring);
   const bool mixing = uniform->enabled;
   for (all_variables (idx)) {
@@ -253,6 +255,7 @@ static void compact_policy (kissat *solver, unsigned vars) {
       kissat_indicator_move (uniform, idx, midx);
     kissat_move_keys (keys, idx, midx);
     kissat_move_intervals (intervals, idx, midx);
+    kissat_move_lrb (lrb, idx, midx);
 #ifdef FEEDBACK
     kissat_move_feedback (solver, idx, midx);
 #endif
@@ -265,6 +268,7 @@ static void compact_policy (kissat *solver, unsigned vars) {
       kissat_indicator_put (uniform, idx, false);
     kissat_clear_keys (keys, idx);
     kissat_clear_intervals (intervals, idx);
+    kissat_clear_lrb (lrb, idx);
 #ifdef FEEDBACK
     kissat_clear_feedback (solver, idx);
 #endif

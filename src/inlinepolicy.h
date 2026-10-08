@@ -69,7 +69,11 @@
 // With CHB scores (tree builds, 'chb=1', see 'chb.h') a score is the
 // variable's ERWA value Q: it starts at zero at activation, there is no
 // pseudo-activity, and CHB pays it after every search propagation, to the
-// variables the propagation assigned (see above for their leaves).
+// variables the propagation assigned (see above for their leaves).  Under
+// LRB ('lrb=1', see 'lrb.h') Q changes when a variable's assignment
+// interval closes instead: at its unassignment, or at the end of the
+// analysis step whose backtrack unassigned it, when it may be assigned
+// again (the asserted literal), and then its leaf lags as above.
 //
 // Under P1, TS and UCB (tree builds, see 'keys.h') a leaf holds the
 // variable's key, its score combined with a term of the policy's own,
@@ -412,7 +416,7 @@ static inline void kissat_policy_shrink_trail (kissat *solver,
 // LRB's interval, inside an analysis step, waits for the step's bump round
 // or its end, keeping its class (see 'intervals.h').  An unassigned
 // variable without an open interval, which only the unit tests make,
-// loses its mark.
+// loses its mark; LRB's walk cannot have opened one for it (see 'lrb.h').
 
 static inline void kissat_intervals_unassign (kissat *solver,
                                               unsigned idx) {
@@ -423,6 +427,8 @@ static inline void kissat_intervals_unassign (kissat *solver,
   const unsigned state = *p;
   if (!(state & INTERVALS_OPEN)) {
     *p = state & ~INTERVALS_MARKED;
+    assert (!intervals->lrb ||
+            solver->policy.lrb.start[idx] == LRB_CLOSED);
     return;
   }
   assert (!(state & INTERVALS_DEFERRED));
@@ -695,11 +701,16 @@ static inline void kissat_policy_begin_analysis (kissat *solver) {
 }
 
 // The step ends, after its bump round if it had one.  Intervals still
-// deferred (no bump round) close without a round.
+// deferred (no bump round) close without a round.  Assertion builds drop
+// the boundary of LRB's check if the step recorded no participants (see
+// 'lrb.h').
 
 static inline void kissat_policy_end_analysis (kissat *solver) {
 #ifdef FEEDBACK
   kissat_feedback_end_analysis (solver);
+#endif
+#ifndef NDEBUG
+  solver->policy.lrb.check.boundary = LRB_NO_BOUNDARY;
 #endif
   intervals *const intervals = &solver->policy.intervals;
   if (!intervals->analyzing)

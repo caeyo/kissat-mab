@@ -76,6 +76,7 @@ void kissat_increase_size (kissat *solver, unsigned new_size) {
   kissat_resize_indicator (solver, &solver->policy.uniform, new_size);
   kissat_resize_keys (solver, new_size);
   kissat_resize_intervals (solver, new_size);
+  kissat_resize_lrb (solver, new_size);
 #ifdef FEEDBACK
   kissat_resize_feedback (solver, new_size);
 #endif
@@ -118,6 +119,7 @@ void kissat_decrease_size (kissat *solver) {
   kissat_resize_indicator (solver, &solver->policy.uniform, new_size);
   kissat_resize_keys (solver, new_size);
   kissat_resize_intervals (solver, new_size);
+  kissat_resize_lrb (solver, new_size);
 #ifdef FEEDBACK
   kissat_resize_feedback (solver, new_size);
 #endif

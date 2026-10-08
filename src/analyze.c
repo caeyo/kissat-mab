@@ -183,8 +183,9 @@ static void analyze_reason_side_literals (kissat *solver) {
     return;
 #ifndef HEAPARGMAX
   // Reason-side literals only serve bumping, and CHB's conflicts involve
-  // the clauses of the analysis alone (see 'chb.h').
-  if (solver->stable && kissat_chb (solver))
+  // the clauses of the analysis alone (see 'chb.h'); LRB counts them apart
+  // (see 'lrb.h').
+  if (solver->stable && kissat_chb (solver) && !kissat_lrb (solver))
     return;
 #endif
   if (DELAYING (bumpreasons))
@@ -203,6 +204,10 @@ static void analyze_reason_side_literals (kissat *solver) {
 #endif
   LOG ("trying to bump reason side literals too");
   const size_t saved = SIZE_STACK (solver->analyzed);
+#ifndef HEAPARGMAX
+  if (solver->stable && solver->policy.lrb.started)
+    solver->policy.lrb.boundary = saved; // LRB's split (see 'lrb.h')
+#endif
   const size_t limit = GET_OPTION (bumpreasonslimit) * saved;
   LOG ("analyzed already %zu literals thus limit %zu", saved, limit);
   ward *arena = BEGIN_STACK (solver->arena);
@@ -583,6 +588,9 @@ int kissat_analyze (kissat *solver, clause *conflict) {
         if (GET_OPTION (shrink))
           kissat_shrink_clause (solver);
       }
+#if !defined(HEAPARGMAX) && !defined(NDEBUG)
+      kissat_check_lrb_boundary (solver); // LRB's check (see 'lrb.h')
+#endif
       analyze_reason_side_literals (solver);
       kissat_learn_clause (solver);
       reset_analysis_but_not_analyzed_literals (solver);

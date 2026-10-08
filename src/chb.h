@@ -43,6 +43,11 @@
 // Nothing decays and nothing is rescaled: Q lies in [0, 1].  In stable
 // mode 'reorder' leaves Q alone (it is part of the VSIDS estimator), so
 // the tree is never rebuilt for CHB's sake.
+//
+// With 'lrb=1' the same ERWA is fed by LRB's reward instead (see 'lrb.h'):
+// the walk opens the variables' intervals instead of paying them, the
+// record of participants counts their participations instead of setting
+// 'last_conflict', and Q changes when an interval closes.
 
 #ifndef HEAPARGMAX
 
@@ -61,6 +66,15 @@ static inline bool kissat_chb (struct kissat *solver) {
   (void) solver;
 #endif
   return GET_OPTION (chb);
+}
+
+// LRB's reward on CHB's ERWA (see 'lrb.h'), which needs 'chb=1'.
+
+static inline bool kissat_lrb (struct kissat *solver) {
+#ifdef NOPTIONS
+  (void) solver;
+#endif
+  return GET_OPTION (lrb);
 }
 
 // The step size after 'conflicts' conflicts, computed from their number
@@ -83,12 +97,14 @@ static inline void kissat_chb_shrink_trail (struct kissat *solver,
 }
 
 // Called after every search propagation, with CHB scores: pays every
-// variable assigned since the last call in stable mode.
+// variable assigned since the last call in stable mode, or under LRB opens
+// its interval.
 
 void kissat_chb_assign (struct kissat *, bool conflict);
 
 // Called by 'kissat_bump_analyzed' in stable mode with CHB scores: the
-// analyzed variables participated in the current conflict.
+// analyzed variables participated in the current conflict, which under
+// LRB counts their participations.
 
 void kissat_chb_analyzed (struct kissat *);
 

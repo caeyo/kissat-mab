@@ -10,7 +10,10 @@
 // Under UCB and TS (see 'keys.h') every payment is also an observation of
 // the variable, and the counts' increment grows at every conflict after
 // its payments.  Feedback builds measure every payment, and keep UCB's
-// counts whatever the options (see 'feedback.h').
+// counts whatever the options (see 'feedback.h').  Under LRB, which runs
+// with none of them, the walk opens the variables' intervals at the
+// conflict count before this propagation's conflict, and pays nothing
+// (see 'lrb.h').
 
 void kissat_chb_assign (kissat *solver, bool conflict) {
   estimator *const estimator = &solver->estimator;
@@ -23,6 +26,12 @@ void kissat_chb_assign (kissat *solver, bool conflict) {
   const uint64_t conflicts = estimator->chb.conflicts;
   if (conflict)
     estimator->chb.conflicts = conflicts + 1;
+  if (solver->policy.lrb.started) {
+    assert (!solver->policy.keys.counts);
+    if (played < size)
+      kissat_lrb_assign (solver, played, size, conflicts);
+    return;
+  }
   const bool counts = solver->policy.keys.counts;
   if (played >= size) {
     if (conflict && counts)
@@ -80,17 +89,23 @@ void kissat_chb_assign (kissat *solver, bool conflict) {
 // recording its analyzed variables, so a conflict is counted in 'analyzed'
 // by its first round only.  A conflict that Kissat reuses as the reason of
 // its single literal on the conflict level is not analyzed and records
-// nothing, as it bumps nothing on the VSIDS line.
+// nothing, as it bumps nothing on the VSIDS line.  Under LRB every round
+// counts the participations of its variables, the reason-side ones apart,
+// and 'last_conflict' is not kept (see 'lrb.h').
 
 void kissat_chb_analyzed (kissat *solver) {
   assert (solver->stable);
   estimator *const estimator = &solver->estimator;
   const uint64_t conflicts = estimator->chb.conflicts;
-  uint64_t *const last_conflict = solver->last_conflict;
-  const flags *const flags = solver->flags;
-  for (all_stack (unsigned, idx, solver->analyzed))
-    if (flags[idx].active)
-      last_conflict[idx] = conflicts;
+  if (solver->policy.lrb.started)
+    kissat_lrb_analyzed (solver);
+  else {
+    uint64_t *const last_conflict = solver->last_conflict;
+    const flags *const flags = solver->flags;
+    for (all_stack (unsigned, idx, solver->analyzed))
+      if (flags[idx].active)
+        last_conflict[idx] = conflicts;
+  }
   if (estimator->chb.recorded != conflicts) {
     estimator->chb.recorded = conflicts;
     estimator->chb.analyzed++;
